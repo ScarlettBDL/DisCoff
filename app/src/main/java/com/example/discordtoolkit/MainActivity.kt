@@ -6,7 +6,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import com.example.discordtoolkit.ui.MainScreen
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.discordtoolkit.ui.AppRoot
+import com.example.discordtoolkit.ui.AppViewModel
 import com.example.discordtoolkit.ui.theme.DiscordToolkitTheme
 
 class MainActivity : ComponentActivity() {
@@ -18,7 +22,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             DiscordToolkitTheme {
-                MainScreen()
+                val vm: AppViewModel = viewModel()
+                val state by vm.state.collectAsState()
+                AppRoot(state, vm)
             }
         }
     }

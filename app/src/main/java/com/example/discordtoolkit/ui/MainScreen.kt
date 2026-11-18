@@ -1,5 +1,6 @@
 package com.example.discordtoolkit.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,14 +23,17 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -47,17 +51,36 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import com.example.discordtoolkit.discord.DChannel
+import com.example.discordtoolkit.discord.DGuild
+import com.example.discordtoolkit.discord.DUser
+import com.example.discordtoolkit.discord.DmEntry
 import com.example.discordtoolkit.ui.theme.DcColors
 
 private enum class Section { GUILD, DMS }
 
+private class ToolInfo(val id: String, val title: String, val description: String)
+
+private val tools = listOf(
+    ToolInfo("roles", "Roles masivos", "Creá varios roles de una sola vez"),
+    ToolInfo("embeds", "Embeds", "Armá y mandá embeds sin webhooks"),
+    ToolInfo("mod", "Moderación", "Ban, softban, mute y más"),
+    ToolInfo("msgs", "Mensajes", "Leé canales y enviá mensajes")
+)
+
+private val railPalette = listOf(0xFF3B3F8F, 0xFF1F6F54, 0xFF8F3B3B, 0xFF6B4A1E, 0xFF2E5A7A, 0xFF5A2E7A)
+
+private fun railColor(id: String): Color =
+    Color(railPalette[(id.hashCode() and 0x7fffffff) % railPalette.size])
+
 @Composable
-fun MainScreen() {
+fun MainScreen(state: UiState, vm: AppViewModel) {
     var section by remember { mutableStateOf(Section.GUILD) }
-    var selectedGuildId by remember { mutableStateOf(FakeData.guilds.first().id) }
-    var selectedChannelId by remember { mutableStateOf<String?>(null) }
     var showTools by remember { mutableStateOf(false) }
-    val guild = FakeData.guilds.first { it.id == selectedGuildId }
+    val guild = state.guilds.firstOrNull { it.id == state.selectedGuildId }
+
+    BackHandler(enabled = showTools) { showTools = false }
 
     Row(
         Modifier
@@ -66,16 +89,15 @@ fun MainScreen() {
             .systemBarsPadding()
     ) {
         ServerRail(
-            guilds = FakeData.guilds,
+            guilds = state.guilds,
             dmsSelected = section == Section.DMS,
-            selectedGuildId = if (section == Section.GUILD) selectedGuildId else null,
+            selectedGuildId = if (section == Section.GUILD) state.selectedGuildId else null,
             onHome = {
                 section = Section.DMS
                 showTools = false
             },
             onSelectGuild = { id ->
-                selectedGuildId = id
-                selectedChannelId = null
+                vm.selectGuild(id)
                 section = Section.GUILD
                 showTools = false
             }
@@ -89,17 +111,22 @@ fun MainScreen() {
         ) {
             Box(Modifier.weight(1f)) {
                 when {
-                    section == Section.DMS -> DmPanel()
+                    section == Section.DMS -> DmPanel(state.dms, vm)
                     showTools -> ToolsPanel(onBack = { showTools = false })
+                    guild == null -> Text(
+                        "Cargando servidores… Si no aparece ninguno, el bot todavía no está en ningún server.",
+                        color = DcColors.TextMuted,
+                        modifier = Modifier.padding(24.dp)
+                    )
                     else -> ChannelPanel(
                         guild = guild,
-                        selectedChannelId = selectedChannelId,
-                        onSelectChannel = { selectedChannelId = it },
+                        channels = state.channels[guild.id],
+                        vm = vm,
                         onOpenTools = { showTools = true }
                     )
                 }
             }
-            UserBar(FakeData.bot)
+            UserBar(state.me, state.gatewayStatus, onLogout = vm::logout)
         }
     }
 }
@@ -108,7 +135,7 @@ fun MainScreen() {
 
 @Composable
 private fun ServerRail(
-    guilds: List<Guild>,
+    guilds: List<DGuild>,
     dmsSelected: Boolean,
     selectedGuildId: String?,
     onHome: () -> Unit,
@@ -138,10 +165,19 @@ private fun ServerRail(
         items(guilds, key = { it.id }) { g ->
             RailButton(
                 selected = g.id == selectedGuildId,
-                background = Color(g.color),
+                background = railColor(g.id),
                 onClick = { onSelectGuild(g.id) }
             ) {
-                Text(g.initials, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                val iconUrl = g.iconUrl
+                if (iconUrl != null) {
+                    AsyncImage(
+                        model = iconUrl,
+                        contentDescription = g.name,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Text(g.initials, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                }
             }
         }
     }
@@ -188,33 +224,49 @@ private fun RailButton(
 private sealed interface ListEntry {
     val key: String
 
-    data class Header(val category: Category, val collapsed: Boolean) : ListEntry {
+    data class Header(val category: DChannel, val collapsed: Boolean) : ListEntry {
         override val key: String get() = "h-${category.id}"
     }
 
-    data class Item(val channel: Channel) : ListEntry {
+    data class Item(val channel: DChannel) : ListEntry {
         override val key: String get() = channel.id
     }
 }
 
-@Composable
-private fun ChannelPanel(
-    guild: Guild,
-    selectedChannelId: String?,
-    onSelectChannel: (String) -> Unit,
-    onOpenTools: () -> Unit
-) {
-    val categories = remember(guild.id) { FakeData.categoriesFor(guild.id) }
-    val collapsed = remember(guild.id) { mutableStateListOf<String>() }
-    val entries = categories.flatMap { cat ->
+private fun buildEntries(channels: List<DChannel>, collapsed: List<String>): List<ListEntry> {
+    val sorter = compareBy<DChannel>({ it.isVoice }, { it.position })
+    val categories = channels.filter { it.isCategory }.sortedBy { it.position }
+    val categoryIds = categories.map { it.id }.toSet()
+    val shown = channels.filter { it.isText || it.isVoice }
+    val result = mutableListOf<ListEntry>()
+
+    shown
+        .filter { it.parentId == null || it.parentId !in categoryIds }
+        .sortedWith(sorter)
+        .forEach { result.add(ListEntry.Item(it)) }
+
+    categories.forEach { cat ->
         val isCollapsed = cat.id in collapsed
-        val header: ListEntry = ListEntry.Header(cat, isCollapsed)
-        if (isCollapsed) {
-            listOf(header)
-        } else {
-            listOf(header) + cat.channels.map { ListEntry.Item(it) }
+        result.add(ListEntry.Header(cat, isCollapsed))
+        if (!isCollapsed) {
+            shown
+                .filter { it.parentId == cat.id }
+                .sortedWith(sorter)
+                .forEach { result.add(ListEntry.Item(it)) }
         }
     }
+    return result
+}
+
+@Composable
+private fun ChannelPanel(
+    guild: DGuild,
+    channels: List<DChannel>?,
+    vm: AppViewModel,
+    onOpenTools: () -> Unit
+) {
+    val collapsed = remember(guild.id) { mutableStateListOf<String>() }
+    val entries = if (channels == null) emptyList() else buildEntries(channels, collapsed)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -241,6 +293,15 @@ private fun ChannelPanel(
         }
         item { SearchRow() }
         item { ToolsEntry(onOpenTools) }
+        if (channels == null) {
+            item {
+                Text(
+                    "Cargando canales…",
+                    color = DcColors.TextMuted,
+                    modifier = Modifier.padding(top = 16.dp)
+                )
+            }
+        }
         items(entries, key = { it.key }) { entry ->
             when (entry) {
                 is ListEntry.Header -> CategoryHeader(entry.category.name, entry.collapsed) {
@@ -250,11 +311,11 @@ private fun ChannelPanel(
                         collapsed.add(entry.category.id)
                     }
                 }
-                is ListEntry.Item -> ChannelRow(
-                    channel = entry.channel,
-                    selected = entry.channel.id == selectedChannelId,
-                    onClick = { onSelectChannel(entry.channel.id) }
-                )
+                is ListEntry.Item -> ChannelRow(entry.channel) {
+                    if (entry.channel.isText) {
+                        vm.openChannel(ChannelRef(entry.channel.id, entry.channel.name, false))
+                    }
+                }
             }
         }
     }
@@ -366,26 +427,24 @@ private fun CategoryHeader(name: String, collapsed: Boolean, onClick: () -> Unit
 }
 
 @Composable
-private fun ChannelRow(channel: Channel, selected: Boolean, onClick: () -> Unit) {
-    val isText = channel.type == ChannelType.TEXT
+private fun ChannelRow(channel: DChannel, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(if (selected) DcColors.SurfaceHigh else Color.Transparent)
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            if (isText) "#" else "🔊",
+            if (channel.isText) "#" else "🔊",
             color = DcColors.TextMuted,
-            fontSize = if (isText) 22.sp else 16.sp,
+            fontSize = if (channel.isText) 22.sp else 16.sp,
             modifier = Modifier.width(32.dp)
         )
         Text(
             channel.name,
-            color = if (selected) DcColors.TextPrimary else DcColors.TextMuted,
+            color = DcColors.TextMuted,
             fontSize = 17.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -427,7 +486,14 @@ private fun ToolsPanel(onBack: () -> Unit) {
                 )
             }
         }
-        items(FakeData.tools, key = { it.id }) { tool ->
+        item {
+            Text(
+                "Próximamente: todavía no hacen nada.",
+                color = DcColors.TextMuted,
+                fontSize = 14.sp
+            )
+        }
+        items(tools, key = { it.id }) { tool ->
             Column(
                 Modifier
                     .fillMaxWidth()
@@ -451,7 +517,10 @@ private fun ToolsPanel(onBack: () -> Unit) {
 // ---------- Mensajes directos ----------
 
 @Composable
-private fun DmPanel() {
+private fun DmPanel(dms: List<DmEntry>, vm: AppViewModel) {
+    var showDialog by remember { mutableStateOf(false) }
+    var userId by remember { mutableStateOf("") }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp)
@@ -465,25 +534,80 @@ private fun DmPanel() {
                 modifier = Modifier.padding(top = 8.dp, bottom = 12.dp)
             )
         }
-        items(FakeData.directMessages, key = { it.id }) { dm ->
+        item {
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 8.dp),
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(DcColors.Surface)
+                    .clickable { showDialog = true }
+                    .padding(14.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Avatar(dm.name.first().toString(), 44.dp, DcColors.SurfaceHigh)
+                Text("+  Nuevo mensaje por ID de usuario", color = DcColors.TextPrimary, fontSize = 16.sp)
+            }
+        }
+        if (dms.isEmpty()) {
+            item {
+                Text(
+                    "Todavía no hay conversaciones. Las que te escriban van a aparecer acá, " +
+                        "o abrí una con el ID de alguien que comparta un server con el bot " +
+                        "(también podés mantener apretado un mensaje y elegir Mensaje directo).",
+                    color = DcColors.TextMuted,
+                    fontSize = 14.sp,
+                    modifier = Modifier.padding(top = 16.dp)
+                )
+            }
+        }
+        items(dms, key = { it.channelId }) { dm ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { vm.openChannel(ChannelRef(dm.channelId, dm.name, true)) }
+                    .padding(vertical = 10.dp, horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Avatar(dm.name.firstOrNull()?.uppercase() ?: "?", 44.dp, DcColors.SurfaceHigh)
                 Spacer(Modifier.width(12.dp))
                 Text(dm.name, color = DcColors.TextPrimary, fontSize = 17.sp)
             }
         }
+    }
+
+    if (showDialog) {
+        AlertDialog(
+            onDismissRequest = { showDialog = false },
+            containerColor = DcColors.Surface,
+            title = { Text("Nuevo mensaje directo") },
+            text = {
+                OutlinedTextField(
+                    value = userId,
+                    onValueChange = { userId = it },
+                    label = { Text("ID del usuario") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDialog = false
+                    vm.startDm(userId)
+                    userId = ""
+                }) { Text("Abrir") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDialog = false }) { Text("Cancelar") }
+            }
+        )
     }
 }
 
 // ---------- Barra de usuario (el bot) ----------
 
 @Composable
-private fun UserBar(bot: BotUser) {
+private fun UserBar(me: DUser?, status: String, onLogout: () -> Unit) {
+    var confirm by remember { mutableStateOf(false) }
+
     Row(
         Modifier
             .fillMaxWidth()
@@ -494,32 +618,68 @@ private fun UserBar(bot: BotUser) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box {
-            Avatar(bot.name.first().toString(), 44.dp, DcColors.Accent)
+            if (me != null) {
+                AsyncImage(
+                    model = me.avatarUrl,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                )
+            } else {
+                Avatar("?", 44.dp, DcColors.Accent)
+            }
             Box(
                 Modifier
                     .align(Alignment.BottomEnd)
                     .size(14.dp)
                     .clip(CircleShape)
-                    .background(DcColors.Online)
+                    .background(if (status == "Conectado") DcColors.Online else DcColors.Offline)
                     .border(2.dp, DcColors.Surface, CircleShape)
             )
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
-                bot.name,
+                me?.name ?: "…",
                 color = DcColors.TextPrimary,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Text(bot.status, color = DcColors.TextMuted, fontSize = 14.sp)
+            Text(status, color = DcColors.TextMuted, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Icon(
-            imageVector = Icons.Filled.Notifications,
-            contentDescription = null,
-            tint = DcColors.TextMuted
+        Box(
+            Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .clickable { confirm = true },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ExitToApp,
+                contentDescription = "Cerrar sesión",
+                tint = DcColors.TextMuted
+            )
+        }
+    }
+
+    if (confirm) {
+        AlertDialog(
+            onDismissRequest = { confirm = false },
+            containerColor = DcColors.Surface,
+            title = { Text("Cerrar sesión") },
+            text = { Text("Se borra el token guardado en este dispositivo.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirm = false
+                    onLogout()
+                }) { Text("Salir") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirm = false }) { Text("Cancelar") }
+            }
         )
     }
 }
