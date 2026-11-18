@@ -190,7 +190,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun notifEnabled(): Boolean = storage.blob("notif_enabled") == "1"
+
+    fun setNotifEnabled(on: Boolean) {
+        storage.saveBlob("notif_enabled", if (on) "1" else "0")
+        val ctx = getApplication<Application>()
+        if (on) {
+            try {
+                com.example.discordtoolkit.NotifyService.start(ctx)
+            } catch (e: Exception) {
+                notify("No se pudo iniciar el servicio de avisos")
+            }
+        } else {
+            com.example.discordtoolkit.NotifyService.stop(ctx)
+        }
+    }
+
     fun logout() {
+        com.example.discordtoolkit.NotifyService.stop(getApplication<Application>())
         gateway?.stop()
         gateway = null
         api = null
@@ -856,6 +873,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- Chat ----------
 
     fun openChannel(ref: ChannelRef) {
+        com.example.discordtoolkit.AppVisibility.openChannelId = ref.id
         _state.update {
             it.copy(
                 openChannel = ref,
@@ -887,6 +905,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun closeChannel() {
+        com.example.discordtoolkit.AppVisibility.openChannelId = null
         _state.update {
             it.copy(openChannel = null, messages = emptyList(), replyingTo = null, editing = null)
         }

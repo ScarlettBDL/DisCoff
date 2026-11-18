@@ -54,6 +54,7 @@ fun ToolHost(state: UiState, vm: AppViewModel) {
         "audit" -> AuditScreen(state, vm, route.guildId)
         "modlog" -> ModLogScreen(state, vm, route.guildId)
         "manage" -> ManageScreen(state, vm, route.guildId)
+        "notif" -> NotifyScreen(vm)
         else -> ToolScaffold("Herramienta", null, vm::closeTool) {
             Text("Esta herramienta todavía no está disponible.", color = DcColors.TextMuted)
         }
@@ -646,5 +647,65 @@ fun ManageScreen(state: UiState, vm: AppViewModel, guildId: String) {
             )
         }
         null -> Unit
+    }
+}
+
+
+// ---------------------------------------------------------------- Notificaciones
+
+@Composable
+fun NotifyScreen(vm: AppViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var enabled by remember { mutableStateOf(vm.notifEnabled()) }
+    val permission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            vm.setNotifEnabled(true)
+            enabled = true
+        } else {
+            android.widget.Toast.makeText(context, "Sin permiso de notificaciones no hay avisos", android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+
+    ToolScaffold("Notificaciones", null, vm::closeTool) {
+        Text(
+            "Con esto activado, la app mantiene una conexión en segundo plano (con una notificación fija, como exige Android) y te avisa cuando alguien te escribe por DM o menciona al bot.",
+            color = DcColors.TextMuted,
+            fontSize = 13.sp
+        )
+        Section("Avisos") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Avisarme de DMs y menciones",
+                    color = DcColors.TextPrimary,
+                    fontSize = 16.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                androidx.compose.material3.Switch(
+                    checked = enabled,
+                    onCheckedChange = { on ->
+                        if (!on) {
+                            vm.setNotifEnabled(false)
+                            enabled = false
+                        } else if (android.os.Build.VERSION.SDK_INT >= 33 &&
+                            androidx.core.content.ContextCompat.checkSelfPermission(
+                                context, android.Manifest.permission.POST_NOTIFICATIONS
+                            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                        ) {
+                            permission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                        } else {
+                            vm.setNotifEnabled(true)
+                            enabled = true
+                        }
+                    }
+                )
+            }
+        }
+        Text(
+            "Si tu celular cierra la app para ahorrar batería, desactivá la optimización de batería para Discord Toolkit en los ajustes de Android. No se avisa de mensajes del chat que tenés abierto.",
+            color = DcColors.TextMuted,
+            fontSize = 12.sp
+        )
     }
 }
