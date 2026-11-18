@@ -37,8 +37,35 @@ class DiscordApi(private val token: String) {
         return when (raw.code) {
             401 -> "Token inválido"
             403 -> "Sin permisos: " + msg.ifEmpty { "Missing Access" }
+            400 -> {
+                // "Invalid Form Body" no dice nada: se busca el detalle dentro de "errors".
+                val detail = try {
+                    firstErrorMessage(JSONObject(raw.body).optJSONObject("errors"))
+                } catch (e: Exception) {
+                    null
+                }
+                if (detail != null) "$msg: $detail" else msg.ifEmpty { "Error 400" }
+            }
             else -> msg.ifEmpty { "Error ${raw.code}" }
         }
+    }
+
+    /** Recorre el árbol "errors" de Discord y devuelve "campo: mensaje" del primer error que encuentra. */
+    private fun firstErrorMessage(node: JSONObject?, path: String = ""): String? {
+        if (node == null) return null
+        val own = node.optJSONArray("_errors")
+        if (own != null && own.length() > 0) {
+            val text = own.optJSONObject(0)?.optString("message").orEmpty()
+            return if (path.isEmpty()) text else "$path: $text"
+        }
+        val keys = node.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val child = node.optJSONObject(key) ?: continue
+            val found = firstErrorMessage(child, if (path.isEmpty()) key else "$path.$key")
+            if (found != null) return found
+        }
+        return null
     }
 
     /** Ejecuta la request y reintenta si Discord responde 429 (rate limit). */
@@ -77,6 +104,36 @@ class DiscordApi(private val token: String) {
         val body = execute { request("/guilds/$guildId/channels").get().build() }
         return withContext(Dispatchers.Default) {
             JSONArray(body).mapObjects { Parse.channel(it, guildId) }
+        }
+    }
+
+    suspend fun getRoles(guildId: String): List<RoleInfo> {
+        val body = execute { request("/guilds/$guildId/roles").get().build() }
+        return withContext(Dispatchers.Default) {
+            JSONArray(body).mapObjects { Parse.roleInfo(it) }
+        }
+    }
+
+    /** Ids de los roles de un miembro. Si ya no está en el server (o es un webhook) devuelve una lista vacía. */
+    suspend fun getMemberRoles(guildId: String, userId: String): List<String> {
+        val body = try {
+            execute { request("/guilds/$guildId/members/$userId").get().build() }
+        } catch (e: ApiException) {
+            if (e.code == 404) return emptyList()
+            throw e
+        }
+        val arr = JSONObject(body).optJSONArray("roles") ?: return emptyList()
+        return (0 until arr.length()).map { arr.optString(it) }
+    }
+
+    /** Manda un mensaje con un embed armado por la herramienta de embeds. */
+    suspend fun sendEmbed(channelId: String, content: String, embed: JSONObject) {
+        val payload = JSONObject().put("embeds", JSONArray().put(embed))
+        if (content.isNotBlank()) payload.put("content", content)
+        execute {
+            request("/channels/$channelId/messages")
+                .post(payload.toString().toRequestBody(jsonType))
+                .build()
         }
     }
 

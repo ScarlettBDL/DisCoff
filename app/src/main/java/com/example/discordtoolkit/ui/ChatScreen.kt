@@ -156,6 +156,7 @@ fun ChatScreen(state: UiState, vm: AppViewModel) {
                         MessageItem(
                             m = m,
                             showHeader = !grouped,
+                            nameColor = state.nameColor(channel.guildId, m.author.id),
                             onLongPress = { actionsFor = m },
                             onReaction = { emoji -> vm.toggleReaction(m, emoji) },
                             onOpenUrl = { url -> uriHandler.openUri(url) },
@@ -358,6 +359,7 @@ private fun ActionRow(label: String, onClick: () -> Unit) {
 private fun MessageItem(
     m: Message,
     showHeader: Boolean,
+    nameColor: Int,
     onLongPress: () -> Unit,
     onReaction: (String) -> Unit,
     onOpenUrl: (String) -> Unit,
@@ -416,7 +418,8 @@ private fun MessageItem(
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
                         m.author.name,
-                        color = DcColors.TextPrimary,
+                        // Color del rol más alto que tenga el usuario; sin rol con color queda blanco.
+                        color = if (nameColor != 0) Color(0xFF000000.toInt() or nameColor) else DcColors.TextPrimary,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
@@ -432,7 +435,7 @@ private fun MessageItem(
             if (body != null) {
                 Text(body, color = DcColors.TextPrimary, fontSize = 16.sp)
             }
-            m.embeds.forEach { EmbedBox(it, onImageClick, onVideoClick) }
+            m.embeds.forEach { EmbedCard(it, onImageClick, onVideoClick, onOpenUrl) }
             m.attachments.forEach { AttachmentView(it, onOpenUrl, onImageClick, onVideoClick) }
             if (m.reactions.isNotEmpty()) {
                 Row(
@@ -443,53 +446,6 @@ private fun MessageItem(
                 ) {
                     m.reactions.forEach { r -> ReactionChip(r) { onReaction(r.apiEmoji) } }
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun EmbedBox(
-    e: Embed,
-    onImageClick: (String, String) -> Unit,
-    onVideoClick: (String, String) -> Unit
-) {
-    val barColor = if (e.color != null) Color(0xFF000000.toInt() or e.color) else DcColors.Border
-    val description: AnnotatedString? = remember(e.description) {
-        if (e.description.isNullOrBlank()) null else renderMarkdown(e.description)
-    }
-    // Solo la barra de la izquierda lleva el color del embed, como en Discord.
-    Column(
-        Modifier
-            .padding(top = 4.dp)
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(6.dp))
-            .background(DcColors.Surface)
-            .drawBehind { drawRect(color = barColor, size = Size(4.dp.toPx(), size.height)) }
-            .padding(start = 16.dp, top = 10.dp, end = 12.dp, bottom = 10.dp)
-    ) {
-        if (!e.title.isNullOrBlank()) {
-            Text(e.title, color = DcColors.TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-        }
-        if (description != null) {
-            Text(description, color = DcColors.TextPrimary, fontSize = 14.sp)
-        }
-        if (e.imageUrl != null) {
-            // Gif de Tenor, etc.: la miniatura abre el video directo; si no hay video, abre la imagen.
-            val playUrl = e.videoUrl
-            SizedMedia(width = e.imageWidth, height = e.imageHeight, onClick = {
-                when {
-                    playUrl != null -> onVideoClick(playUrl, "video.mp4")
-                    else -> onImageClick(e.imageUrl, "imagen.png")
-                }
-            }) { w, h ->
-                AsyncImage(
-                    model = e.imageUrl,
-                    contentDescription = null,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.size(w, h)
-                )
-                if (playUrl != null) PlayBadge()
             }
         }
     }
@@ -550,7 +506,7 @@ private fun AttachmentView(
 
 /** Círculo con el triángulo de play que se dibuja sobre la miniatura de un video. */
 @Composable
-private fun PlayBadge() {
+internal fun PlayBadge() {
     Box(
         Modifier
             .size(52.dp)
@@ -567,7 +523,7 @@ private fun PlayBadge() {
  * Así la lista no "salta" al cargar y nada se superpone con el texto ni entre sí.
  */
 @Composable
-private fun SizedMedia(
+internal fun SizedMedia(
     width: Int?,
     height: Int?,
     onClick: () -> Unit,

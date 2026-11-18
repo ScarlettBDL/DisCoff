@@ -105,7 +105,12 @@ fun MainScreen(state: UiState, vm: AppViewModel) {
                     state.showTools -> ToolsPanel(
                         onBack = { vm.showTools(false) },
                         onOpenTool = { id ->
-                            if (id == "roles" && guild != null) vm.openRoles(guild.id)
+                            if (guild != null) {
+                                when (id) {
+                                    "roles" -> vm.openRoles(guild.id)
+                                    "embeds" -> vm.openEmbeds(guild.id)
+                                }
+                            }
                         }
                     )
                     guild == null -> Text(
@@ -311,7 +316,7 @@ private fun ChannelPanel(
                 }
                 is ListEntry.Item -> ChannelRow(entry.channel) {
                     if (entry.channel.isText) {
-                        vm.openChannel(ChannelRef(entry.channel.id, entry.channel.name, false))
+                        vm.openChannel(ChannelRef(entry.channel.id, entry.channel.name, false, guild.id))
                     }
                 }
             }
@@ -485,7 +490,7 @@ private fun ToolsPanel(onBack: () -> Unit, onOpenTool: (String) -> Unit) {
             }
         }
         items(tools, key = { it.id }) { tool ->
-            val ready = tool.id == "roles"
+            val ready = tool.id == "roles" || tool.id == "embeds"
             Column(
                 Modifier
                     .fillMaxWidth()

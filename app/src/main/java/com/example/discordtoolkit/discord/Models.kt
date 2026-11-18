@@ -79,6 +79,8 @@ data class Reaction(val emojiName: String, val emojiId: String?, val count: Int,
     val customUrl: String? get() = if (emojiId != null) "https://cdn.discordapp.com/emojis/$emojiId.png?size=32" else null
 }
 
+data class EmbedField(val name: String, val value: String, val inline: Boolean)
+
 data class Embed(
     val title: String?,
     val description: String?,
@@ -88,8 +90,21 @@ data class Embed(
     val color: Int?,
     /** Solo si el embed trae un archivo de video reproducible directo (mp4, webm…), como los gifs de Tenor. */
     val videoUrl: String? = null,
-    val linkUrl: String? = null
+    /** El link del título (la `url` del embed). */
+    val linkUrl: String? = null,
+    val authorName: String? = null,
+    val authorIconUrl: String? = null,
+    val authorUrl: String? = null,
+    val thumbnailUrl: String? = null,
+    val footerText: String? = null,
+    val footerIconUrl: String? = null,
+    /** Fecha del embed ya formateada para mostrar. */
+    val timeLabel: String? = null,
+    val fields: List<EmbedField> = emptyList()
 )
+
+/** Un rol de un servidor, con lo necesario para pintar el nombre de sus miembros. */
+data class RoleInfo(val id: String, val name: String, val color: Int, val position: Int)
 
 data class ReplySnippet(val authorName: String, val content: String)
 
@@ -205,20 +220,49 @@ object Parse {
     }
 
     private fun embed(o: JSONObject): Embed {
+        val type = o.optString("type", "rich")
         val video = o.optJSONObject("video")
-        val image = o.optJSONObject("image") ?: o.optJSONObject("thumbnail")
+        val image = o.optJSONObject("image")
+        val thumb = o.optJSONObject("thumbnail")
         val videoUrl = video?.str("url")?.takeIf { isVideoFile(it) }
+        // En los embeds de imagen/gif la "miniatura" es la imagen principal; en los demás es la miniatura chica.
+        val thumbIsMain = type == "image" || type == "gifv" || videoUrl != null
+        val main = if (thumbIsMain) (image ?: thumb) else image
+        val author = o.optJSONObject("author")
+        val footer = o.optJSONObject("footer")
+        val timestamp = o.str("timestamp")
         return Embed(
             title = o.str("title"),
             description = o.str("description"),
-            imageUrl = image?.str("url"),
-            imageWidth = image?.intOrNull("width") ?: video?.intOrNull("width"),
-            imageHeight = image?.intOrNull("height") ?: video?.intOrNull("height"),
+            imageUrl = main?.str("url"),
+            imageWidth = main?.intOrNull("width") ?: video?.intOrNull("width"),
+            imageHeight = main?.intOrNull("height") ?: video?.intOrNull("height"),
             color = o.intOrNull("color"),
             videoUrl = videoUrl,
-            linkUrl = o.str("url")
+            linkUrl = o.str("url"),
+            authorName = author?.str("name"),
+            authorIconUrl = author?.str("icon_url"),
+            authorUrl = author?.str("url"),
+            thumbnailUrl = if (thumbIsMain) null else thumb?.str("url"),
+            footerText = footer?.str("text"),
+            footerIconUrl = footer?.str("icon_url"),
+            timeLabel = if (timestamp != null) timeLabel(parseIso(timestamp)).ifEmpty { null } else null,
+            fields = o.optJSONArray("fields").mapObjects {
+                EmbedField(
+                    name = it.optString("name", ""),
+                    value = it.optString("value", ""),
+                    inline = it.optBoolean("inline", false)
+                )
+            }
         )
     }
+
+    fun roleInfo(o: JSONObject): RoleInfo = RoleInfo(
+        id = o.optString("id"),
+        name = o.optString("name", ""),
+        color = o.optInt("color", 0),
+        position = o.optInt("position", 0)
+    )
 
     private fun cleanContent(raw: String, mentions: JSONArray?): String {
         var text = raw

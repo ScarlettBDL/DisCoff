@@ -16,12 +16,16 @@ import com.example.discordtoolkit.discord.Gateway
 import com.example.discordtoolkit.discord.Message
 import com.example.discordtoolkit.discord.Parse
 import com.example.discordtoolkit.discord.Reaction
+import com.example.discordtoolkit.discord.RoleInfo
 import com.example.discordtoolkit.discord.ReplySnippet
 import com.example.discordtoolkit.discord.mapObjects
 import com.example.discordtoolkit.discord.str
 import com.example.discordtoolkit.discord.timeLabel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,10 +34,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 
 enum class Phase { INIT, LOGIN, READY }
 
-data class ChannelRef(val id: String, val title: String, val isDm: Boolean)
+data class ChannelRef(val id: String, val title: String, val isDm: Boolean, val guildId: String? = null)
 
 data class UiState(
     val phase: Phase = Phase.INIT,
@@ -58,8 +63,28 @@ data class UiState(
     val showTools: Boolean = false,
     /** Si no es null, está abierta la herramienta de roles de ese server. */
     val rolesGuildId: String? = null,
-    val creatingRoles: Boolean = false
-)
+    val creatingRoles: Boolean = false,
+    /** Si no es null, está abierta la herramienta de embeds de ese server. */
+    val embedsGuildId: String? = null,
+    val sendingEmbed: Boolean = false,
+    /** Roles de cada server (id del server -> id del rol -> rol). */
+    val guildRoles: Map<String, Map<String, RoleInfo>> = emptyMap(),
+    /** Ids de los roles de cada miembro, con clave "idServer:idUsuario". */
+    val memberRoles: Map<String, List<String>> = emptyMap()
+) {
+    /** Color del nombre de un usuario: el del rol más alto (por posición) que tenga color. 0 = sin color. */
+    fun nameColor(guildId: String?, userId: String): Int {
+        if (guildId == null) return 0
+        val roles = guildRoles[guildId] ?: return 0
+        val ids = memberRoles["$guildId:$userId"] ?: return 0
+        var best: RoleInfo? = null
+        for (id in ids) {
+            val r = roles[id] ?: continue
+            if (r.color != 0 && (best == null || r.position > best.position)) best = r
+        }
+        return best?.color ?: 0
+    }
+}
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val storage = Storage(app)
@@ -75,6 +100,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var draftCounter = 0L
 
     private class Picked(val name: String, val mime: String?, val bytes: ByteArray)
+
+    private companion object {
+        /** Cada cuánto se vuelven a pedir los roles de un miembro (cambian poco y no hay evento sin el intent de miembros). */
+        const val MEMBER_TTL_MS = 5 * 60 * 1000L
+    }
 
     private val gatewayListener = object : Gateway.Listener {
         override fun onStatus(text: String) {
@@ -154,6 +184,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         api = null
         roleDrafts.clear()
         draftsGuildId = null
+        embedDraft.reset()
+        embedDraft.guildId = null
         storage.clearToken()
         _state.value = UiState(phase = Phase.LOGIN)
     }
@@ -199,6 +231,71 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (_state.value.channels.containsKey(guildId)) return
         val list = api.getChannels(guildId)
         _state.update { it.copy(channels = it.channels + (guildId to list)) }
+    }
+
+    // ---------- Colores de nombre ----------
+
+    private val memberFetchedAt = ConcurrentHashMap<String, Long>()
+
+    /** Como launchSafe pero sin avisar errores: los colores son un adorno y no deben molestar. */
+    private fun launchQuiet(block: suspend () -> Unit) {
+        viewModelScope.launch {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // sin colores, los nombres quedan en blanco
+            }
+        }
+    }
+
+    private suspend fun ensureRoles(api: DiscordApi, guildId: String) {
+        if (_state.value.guildRoles.containsKey(guildId)) return
+        val roles = api.getRoles(guildId).associateBy { it.id }
+        _state.update { it.copy(guildRoles = it.guildRoles + (guildId to roles)) }
+    }
+
+    /** Trae los roles de los autores que todavía no se conocen (o se conocen hace más de 5 minutos). */
+    private suspend fun loadNameColors(api: DiscordApi, guildId: String, userIds: Collection<String>) {
+        ensureRoles(api, guildId)
+        val now = System.currentTimeMillis()
+        val todo = userIds.distinct().filter { id ->
+            val at = memberFetchedAt["$guildId:$id"]
+            at == null || now - at > MEMBER_TTL_MS
+        }
+        for (chunk in todo.chunked(6)) {
+            val found = coroutineScope {
+                chunk.map { id ->
+                    async {
+                        val roles = try {
+                            api.getMemberRoles(guildId, id)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            null
+                        }
+                        Pair(id, roles)
+                    }
+                }.awaitAll()
+            }
+            _state.update { s ->
+                var map = s.memberRoles
+                for ((id, roles) in found) {
+                    if (roles != null) map = map + ("$guildId:$id" to roles)
+                }
+                s.copy(memberRoles = map)
+            }
+            val fetchedAt = System.currentTimeMillis()
+            for ((id, roles) in found) {
+                if (roles != null) memberFetchedAt["$guildId:$id"] = fetchedAt
+            }
+        }
+    }
+
+    private fun setMemberRoles(guildId: String, userId: String, roles: List<String>) {
+        _state.update { it.copy(memberRoles = it.memberRoles + ("$guildId:$userId" to roles)) }
+        memberFetchedAt["$guildId:$userId"] = System.currentTimeMillis()
     }
 
     fun showDms(show: Boolean) {
@@ -280,6 +377,64 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---------- Embeds ----------
+
+    /** La plantilla del embed que se está armando. Es estado de Compose directo (ver EmbedDraft). */
+    val embedDraft = EmbedDraft()
+
+    fun openEmbeds(guildId: String) {
+        // El borrador es de un server: si se abre otro, se empieza de cero.
+        if (embedDraft.guildId != guildId) {
+            embedDraft.reset()
+            embedDraft.guildId = guildId
+        }
+        if (embedDraft.channelId == null) {
+            embedDraft.channelId = _state.value.channels[guildId]
+                ?.filter { it.isText }
+                ?.minByOrNull { it.position }
+                ?.id
+        }
+        _state.update { it.copy(embedsGuildId = guildId) }
+    }
+
+    fun closeEmbeds() {
+        _state.update { it.copy(embedsGuildId = null, showTools = true) }
+    }
+
+    /** Manda el embed al canal elegido. [onDone] recibe el error, o null si salió bien. */
+    fun sendEmbed(onDone: (String?) -> Unit) {
+        val draft = embedDraft
+        val channelId = draft.channelId
+        if (channelId == null) {
+            onDone("Elegí el canal al que mandarlo")
+            return
+        }
+        val problem = draft.validate()
+        if (problem != null) {
+            onDone(problem)
+            return
+        }
+        val a = api
+        if (a == null) {
+            onDone("No hay conexión con Discord")
+            return
+        }
+        if (_state.value.sendingEmbed) return
+        _state.update { it.copy(sendingEmbed = true) }
+        viewModelScope.launch {
+            try {
+                a.sendEmbed(channelId, draft.content, draft.toJson())
+                onDone(null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                onDone(friendly(e))
+            } finally {
+                _state.update { it.copy(sendingEmbed = false) }
+            }
+        }
+    }
+
     // ---------- Chat ----------
 
     fun openChannel(ref: ChannelRef) {
@@ -298,6 +453,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val list = a.getMessages(ref.id)
                 _state.update { s ->
                     if (s.openChannel?.id == ref.id) s.copy(messages = list, loadingMessages = false) else s
+                }
+                val guildId = ref.guildId
+                if (guildId != null) {
+                    // Los colores llegan después de los mensajes, sin hacer esperar al chat.
+                    launchQuiet { loadNameColors(a, guildId, list.map { it.author.id }) }
                 }
             } catch (e: Exception) {
                 _state.update { s ->
@@ -590,6 +750,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (isDm && me != null && m.author.id != me.id) {
                     addDm(DmEntry(m.channelId, m.author.id, m.author.name, m.author.avatar))
                 }
+                val guildId = m.guildId
+                if (guildId != null) {
+                    // Los mensajes en vivo ya traen los roles del autor; si no, se piden.
+                    val roleIds = d.optJSONObject("member")?.optJSONArray("roles")
+                    if (roleIds != null) {
+                        setMemberRoles(guildId, m.author.id, (0 until roleIds.length()).map { roleIds.optString(it) })
+                    } else {
+                        val a = api
+                        if (a != null) launchQuiet { loadNameColors(a, guildId, listOf(m.author.id)) }
+                    }
+                }
                 upsert(m)
             }
             "MESSAGE_REACTION_ADD", "MESSAGE_REACTION_REMOVE" -> {
@@ -623,12 +794,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             "GUILD_CREATE" -> {
                 val g = Parse.guild(d)
                 val channels = d.optJSONArray("channels").mapObjects { Parse.channel(it, g.id) }
+                val roles = d.optJSONArray("roles").mapObjects { Parse.roleInfo(it) }.associateBy { it.id }
                 _state.update { s ->
                     s.copy(
                         guilds = if (s.guilds.any { it.id == g.id }) s.guilds else s.guilds + g,
                         channels = s.channels + (g.id to channels),
+                        guildRoles = s.guildRoles + (g.id to roles),
                         selectedGuildId = s.selectedGuildId ?: g.id
                     )
+                }
+            }
+            "GUILD_ROLE_CREATE", "GUILD_ROLE_UPDATE" -> {
+                val guildId = d.str("guild_id") ?: return
+                val role = Parse.roleInfo(d.optJSONObject("role") ?: return)
+                _state.update { s ->
+                    val current = s.guildRoles[guildId] ?: emptyMap()
+                    s.copy(guildRoles = s.guildRoles + (guildId to (current + (role.id to role))))
+                }
+            }
+            "GUILD_ROLE_DELETE" -> {
+                val guildId = d.str("guild_id") ?: return
+                val roleId = d.str("role_id") ?: return
+                _state.update { s ->
+                    val current = s.guildRoles[guildId] ?: return@update s
+                    s.copy(guildRoles = s.guildRoles + (guildId to (current - roleId)))
                 }
             }
             "GUILD_DELETE" -> {
