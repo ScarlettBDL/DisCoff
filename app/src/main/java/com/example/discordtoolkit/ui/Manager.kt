@@ -45,10 +45,10 @@ class Manager(
     }
 
     fun editRole(guildId: String, role: RoleInfo, name: String, color: Int) =
-        run(guildId, true, false, "Rol actualizado") { it.editRole(guildId, role.id, name.trim(), color) }
+        exec(guildId, true, false, "Rol actualizado") { it.editRole(guildId, role.id, name.trim(), color) }
 
     fun deleteRole(guildId: String, role: RoleInfo) =
-        run(guildId, true, false, "Rol “${role.name}” borrado") { it.deleteRole(guildId, role.id) }
+        exec(guildId, true, false, "Rol “${role.name}” borrado") { it.deleteRole(guildId, role.id) }
 
     /** Sube o baja un rol una posición, intercambiándolo con el vecino. [sorted] va de arriba hacia abajo. */
     fun moveRole(guildId: String, sorted: List<RoleInfo>, index: Int, up: Boolean) {
@@ -62,11 +62,11 @@ class Manager(
     }
 
     fun createChannel(guildId: String, name: String, type: Int, parentId: String?) =
-        run(guildId, false, true, "Canal creado") { it.createChannel(guildId, name.trim(), type, parentId) }
+        exec(guildId, false, true, "Canal creado") { it.createChannel(guildId, name.trim(), type, parentId) }
 
     fun renameChannel(guildId: String, channel: DChannel, name: String) =
-        run(guildId, false, true, "Canal renombrado") { it.renameChannel(channel.id, name.trim()) }
+        exec(guildId, false, true, "Canal renombrado") { it.renameChannel(channel.id, name.trim()) }
 
     fun deleteChannel(guildId: String, channel: DChannel) =
-        run(guildId, false, true, "Canal “${channel.name}” borrado") { it.deleteChannel(channel.id) }
+        exec(guildId, false, true, "Canal “${channel.name}” borrado") { it.deleteChannel(channel.id) }
 }
