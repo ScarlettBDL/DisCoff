@@ -3,6 +3,7 @@ package com.example.discordtoolkit.ui
 import android.app.Application
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.discordtoolkit.data.Storage
@@ -50,7 +51,14 @@ data class UiState(
     val replyingTo: Message? = null,
     val editing: Message? = null,
     val sending: Boolean = false,
-    val notice: String? = null
+    val notice: String? = null,
+    /** Pantalla principal: mostrar los DMs en vez de los canales del server. */
+    val showDms: Boolean = false,
+    /** Pantalla principal: mostrar la lista de herramientas del bot. */
+    val showTools: Boolean = false,
+    /** Si no es null, está abierta la herramienta de roles de ese server. */
+    val rolesGuildId: String? = null,
+    val creatingRoles: Boolean = false
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -60,6 +68,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private var api: DiscordApi? = null
     private var gateway: Gateway? = null
+
+    /** Roles que se están armando para crear. Es estado de Compose directo (ver RoleDraft). */
+    val roleDrafts = mutableStateListOf<RoleDraft>()
+    private var draftsGuildId: String? = null
+    private var draftCounter = 0L
 
     private class Picked(val name: String, val mime: String?, val bytes: ByteArray)
 
@@ -139,6 +152,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         gateway?.stop()
         gateway = null
         api = null
+        roleDrafts.clear()
+        draftsGuildId = null
         storage.clearToken()
         _state.value = UiState(phase = Phase.LOGIN)
     }
@@ -186,11 +201,82 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(channels = it.channels + (guildId to list)) }
     }
 
+    fun showDms(show: Boolean) {
+        _state.update { it.copy(showDms = show, showTools = false) }
+    }
+
+    fun showTools(show: Boolean) {
+        _state.update { it.copy(showTools = show) }
+    }
+
     fun selectGuild(id: String) {
-        _state.update { it.copy(selectedGuildId = id) }
+        _state.update { it.copy(selectedGuildId = id, showDms = false, showTools = false) }
         launchSafe {
             val a = api ?: return@launchSafe
             ensureChannels(a, id)
+        }
+    }
+
+    // ---------- Roles masivos ----------
+
+    fun openRoles(guildId: String) {
+        // Los borradores son de un server: si se abre otro, se empieza de cero.
+        if (draftsGuildId != guildId) {
+            roleDrafts.clear()
+            draftsGuildId = guildId
+        }
+        _state.update { it.copy(rolesGuildId = guildId) }
+    }
+
+    fun closeRoles() {
+        // Si se está creando, el proceso sigue y los borradores conservan el resultado al volver.
+        _state.update { it.copy(rolesGuildId = null, showTools = true) }
+    }
+
+    fun addRoleDraft() {
+        draftCounter++
+        roleDrafts.add(RoleDraft(draftCounter))
+    }
+
+    fun removeRoleDraft(draft: RoleDraft) {
+        roleDrafts.remove(draft)
+    }
+
+    /** Aplica el mismo campo de permisos a todos los roles que todavía no se crearon. */
+    fun applyPermissionsToAll(permissions: Long) {
+        roleDrafts.filter { it.isEditable }.forEach { it.permissions = permissions }
+    }
+
+    /** Crea de a uno, en orden, todos los roles pendientes (o que fallaron antes). */
+    fun createRoles() {
+        val guildId = draftsGuildId ?: return
+        val a = api ?: return
+        if (_state.value.creatingRoles) return
+        val pending = roleDrafts.filter { it.status is RoleStatus.Draft || it.status is RoleStatus.Failed }
+        if (pending.isEmpty()) return
+        _state.update { it.copy(creatingRoles = true) }
+        viewModelScope.launch {
+            try {
+                for (draft in pending) {
+                    val name = draft.name.trim()
+                    if (name.isEmpty()) {
+                        draft.status = RoleStatus.Failed("Falta el nombre")
+                        continue
+                    }
+                    draft.status = RoleStatus.Creating
+                    try {
+                        val role = a.createRole(guildId, name, draft.color, draft.permissions)
+                        draft.status = RoleStatus.Created(role.id)
+                    } catch (e: CancellationException) {
+                        draft.status = RoleStatus.Draft
+                        throw e
+                    } catch (e: Exception) {
+                        draft.status = RoleStatus.Failed(friendly(e))
+                    }
+                }
+            } finally {
+                _state.update { it.copy(creatingRoles = false) }
+            }
         }
     }
 

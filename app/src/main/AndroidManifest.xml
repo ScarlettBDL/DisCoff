@@ -7,6 +7,7 @@
         android:maxSdkVersion="28" />
 
     <application
+        android:name=".DisCoffApp"
         android:allowBackup="true"
         android:label="Discord Toolkit"
         android:supportsRtl="true"

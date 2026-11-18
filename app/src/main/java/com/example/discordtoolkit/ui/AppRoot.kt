@@ -34,6 +34,7 @@ fun AppRoot(state: UiState, vm: AppViewModel) {
             }
             state.phase == Phase.LOGIN -> LoginScreen(state.loginError, state.connecting, vm::login)
             state.openChannel != null -> ChatScreen(state, vm)
+            state.rolesGuildId != null -> RolesScreen(state, vm)
             else -> MainScreen(state, vm)
         }
         val notice = state.notice

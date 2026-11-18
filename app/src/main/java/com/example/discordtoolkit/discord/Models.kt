@@ -56,6 +56,21 @@ data class Attachment(
                 it.endsWith(".png") || it.endsWith(".jpg") || it.endsWith(".jpeg") ||
                     it.endsWith(".gif") || it.endsWith(".webp")
             }
+
+    val isVideo: Boolean
+        get() = contentType?.startsWith("video/") == true || isVideoFile(filename)
+}
+
+fun isVideoFile(nameOrUrl: String): Boolean {
+    val path = nameOrUrl.substringBefore('?').lowercase()
+    return path.endsWith(".mp4") || path.endsWith(".webm") || path.endsWith(".mov") ||
+        path.endsWith(".m4v") || path.endsWith(".mkv")
+}
+
+/** Rol creado en un servidor. */
+data class DRole(val id: String, val name: String) {
+    /** Así se menciona un rol en un mensaje de Discord. */
+    val mention: String get() = "<@&$id>"
 }
 
 data class Reaction(val emojiName: String, val emojiId: String?, val count: Int, val me: Boolean) {
@@ -70,7 +85,10 @@ data class Embed(
     val imageUrl: String?,
     val imageWidth: Int?,
     val imageHeight: Int?,
-    val color: Int?
+    val color: Int?,
+    /** Solo si el embed trae un archivo de video reproducible directo (mp4, webm…), como los gifs de Tenor. */
+    val videoUrl: String? = null,
+    val linkUrl: String? = null
 )
 
 data class ReplySnippet(val authorName: String, val content: String)
@@ -187,14 +205,18 @@ object Parse {
     }
 
     private fun embed(o: JSONObject): Embed {
+        val video = o.optJSONObject("video")
         val image = o.optJSONObject("image") ?: o.optJSONObject("thumbnail")
+        val videoUrl = video?.str("url")?.takeIf { isVideoFile(it) }
         return Embed(
             title = o.str("title"),
             description = o.str("description"),
             imageUrl = image?.str("url"),
-            imageWidth = image?.intOrNull("width"),
-            imageHeight = image?.intOrNull("height"),
-            color = o.intOrNull("color")
+            imageWidth = image?.intOrNull("width") ?: video?.intOrNull("width"),
+            imageHeight = image?.intOrNull("height") ?: video?.intOrNull("height"),
+            color = o.intOrNull("color"),
+            videoUrl = videoUrl,
+            linkUrl = o.str("url")
         )
     }
 

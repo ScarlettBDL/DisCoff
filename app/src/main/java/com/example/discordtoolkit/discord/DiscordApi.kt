@@ -160,6 +160,24 @@ class DiscordApi(private val token: String) {
         execute { request("/channels/$channelId/messages/$messageId").delete().build() }
     }
 
+    /**
+     * Crea un rol. [color] es RGB (0 = sin color). [permissions] es el campo de bits;
+     * 0 = no se manda y el rol queda con los permisos por defecto de @everyone.
+     * El bot necesita "Gestionar roles" y solo puede dar permisos que él mismo tiene.
+     */
+    suspend fun createRole(guildId: String, name: String, color: Int, permissions: Long): DRole {
+        val payload = JSONObject().put("name", name)
+        if (color != 0) payload.put("color", color)
+        if (permissions != 0L) payload.put("permissions", permissions.toString())
+        val body = execute {
+            request("/guilds/$guildId/roles")
+                .post(payload.toString().toRequestBody(jsonType))
+                .build()
+        }
+        val o = JSONObject(body)
+        return DRole(id = o.getString("id"), name = o.optString("name", name))
+    }
+
     private fun encodeEmoji(emoji: String): String = URLEncoder.encode(emoji, "UTF-8")
 
     suspend fun addReaction(channelId: String, messageId: String, emoji: String) {

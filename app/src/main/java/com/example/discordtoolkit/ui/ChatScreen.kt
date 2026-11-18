@@ -11,6 +11,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -83,6 +84,7 @@ fun ChatScreen(state: UiState, vm: AppViewModel) {
 
     var actionsFor by remember { mutableStateOf<Message?>(null) }
     var viewer by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var video by remember { mutableStateOf<Pair<String, String>?>(null) }
     val uriHandler = LocalUriHandler.current
     val prefix = if (channel.isDm) "@" else "#"
     val reversed = remember(state.messages) { state.messages.asReversed() }
@@ -157,7 +159,8 @@ fun ChatScreen(state: UiState, vm: AppViewModel) {
                             onLongPress = { actionsFor = m },
                             onReaction = { emoji -> vm.toggleReaction(m, emoji) },
                             onOpenUrl = { url -> uriHandler.openUri(url) },
-                            onImageClick = { url, name -> viewer = Pair(url, name) }
+                            onImageClick = { url, name -> viewer = Pair(url, name) },
+                            onVideoClick = { url, name -> video = Pair(url, name) }
                         )
                     }
                 }
@@ -227,6 +230,12 @@ fun ChatScreen(state: UiState, vm: AppViewModel) {
     val viewing = viewer
     if (viewing != null) {
         ImageViewer(url = viewing.first, filename = viewing.second, onDismiss = { viewer = null })
+    }
+
+    // Reproductor de video
+    val playing = video
+    if (playing != null) {
+        VideoPlayerDialog(url = playing.first, filename = playing.second, onDismiss = { video = null })
     }
 }
 
@@ -352,7 +361,8 @@ private fun MessageItem(
     onLongPress: () -> Unit,
     onReaction: (String) -> Unit,
     onOpenUrl: (String) -> Unit,
-    onImageClick: (String, String) -> Unit
+    onImageClick: (String, String) -> Unit,
+    onVideoClick: (String, String) -> Unit
 ) {
     val body: AnnotatedString? = remember(m.content, m.edited) {
         if (m.content.isBlank()) {
@@ -387,7 +397,8 @@ private fun MessageItem(
                     .clip(CircleShape)
             )
         } else {
-            Spacer(Modifier.size(40.dp))
+            // Solo el ancho: con size(40.dp) cada mensaje agrupado medía al menos 40dp de alto y quedaba un renglón vacío.
+            Spacer(Modifier.width(40.dp))
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
@@ -421,8 +432,8 @@ private fun MessageItem(
             if (body != null) {
                 Text(body, color = DcColors.TextPrimary, fontSize = 16.sp)
             }
-            m.embeds.forEach { EmbedBox(it, onImageClick) }
-            m.attachments.forEach { AttachmentView(it, onOpenUrl, onImageClick) }
+            m.embeds.forEach { EmbedBox(it, onImageClick, onVideoClick) }
+            m.attachments.forEach { AttachmentView(it, onOpenUrl, onImageClick, onVideoClick) }
             if (m.reactions.isNotEmpty()) {
                 Row(
                     Modifier
@@ -438,7 +449,11 @@ private fun MessageItem(
 }
 
 @Composable
-private fun EmbedBox(e: Embed, onImageClick: (String, String) -> Unit) {
+private fun EmbedBox(
+    e: Embed,
+    onImageClick: (String, String) -> Unit,
+    onVideoClick: (String, String) -> Unit
+) {
     val barColor = if (e.color != null) Color(0xFF000000.toInt() or e.color) else DcColors.Border
     val description: AnnotatedString? = remember(e.description) {
         if (e.description.isNullOrBlank()) null else renderMarkdown(e.description)
@@ -460,29 +475,69 @@ private fun EmbedBox(e: Embed, onImageClick: (String, String) -> Unit) {
             Text(description, color = DcColors.TextPrimary, fontSize = 14.sp)
         }
         if (e.imageUrl != null) {
-            SizedImage(
-                url = e.imageUrl,
-                width = e.imageWidth,
-                height = e.imageHeight,
-                description = null,
-                onClick = { onImageClick(e.imageUrl, "imagen.png") }
-            )
+            // Gif de Tenor, etc.: la miniatura abre el video directo; si no hay video, abre la imagen.
+            val playUrl = e.videoUrl
+            SizedMedia(width = e.imageWidth, height = e.imageHeight, onClick = {
+                when {
+                    playUrl != null -> onVideoClick(playUrl, "video.mp4")
+                    else -> onImageClick(e.imageUrl, "imagen.png")
+                }
+            }) { w, h ->
+                AsyncImage(
+                    model = e.imageUrl,
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.size(w, h)
+                )
+                if (playUrl != null) PlayBadge()
+            }
         }
     }
 }
 
 @Composable
-private fun AttachmentView(a: Attachment, onOpenUrl: (String) -> Unit, onImageClick: (String, String) -> Unit) {
-    if (a.isImage) {
-        SizedImage(
-            url = a.url,
+private fun AttachmentView(
+    a: Attachment,
+    onOpenUrl: (String) -> Unit,
+    onImageClick: (String, String) -> Unit,
+    onVideoClick: (String, String) -> Unit
+) {
+    when {
+        a.isImage -> SizedMedia(
             width = a.width,
             height = a.height,
-            description = a.filename,
             onClick = { onImageClick(a.url, a.filename) }
-        )
-    } else {
-        Text(
+        ) { w, h ->
+            AsyncImage(
+                model = a.url,
+                contentDescription = a.filename,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.size(w, h)
+            )
+        }
+        a.isVideo -> SizedMedia(
+            width = a.width,
+            height = a.height,
+            onClick = { onVideoClick(a.url, a.filename) }
+        ) { w, h ->
+            Box(
+                Modifier
+                    .size(w, h)
+                    .background(DcColors.Surface),
+                contentAlignment = Alignment.BottomStart
+            ) {
+                Text(
+                    a.filename,
+                    color = DcColors.TextMuted,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(10.dp)
+                )
+            }
+            PlayBadge()
+        }
+        else -> Text(
             "📎 ${a.filename}",
             color = DcColors.Accent,
             fontSize = 15.sp,
@@ -493,12 +548,31 @@ private fun AttachmentView(a: Attachment, onOpenUrl: (String) -> Unit, onImageCl
     }
 }
 
+/** Círculo con el triángulo de play que se dibuja sobre la miniatura de un video. */
+@Composable
+private fun PlayBadge() {
+    Box(
+        Modifier
+            .size(52.dp)
+            .clip(CircleShape)
+            .background(Color(0x99000000)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text("▶", color = Color.White, fontSize = 22.sp)
+    }
+}
+
 /**
- * Imagen con tamaño calculado de antemano a partir de sus dimensiones reales. Así la lista no
- * "salta" al cargar y las imágenes nunca se superponen con el texto ni entre ellas.
+ * Contenedor de imagen o video con tamaño calculado de antemano a partir de sus dimensiones reales.
+ * Así la lista no "salta" al cargar y nada se superpone con el texto ni entre sí.
  */
 @Composable
-private fun SizedImage(url: String, width: Int?, height: Int?, description: String?, onClick: () -> Unit) {
+private fun SizedMedia(
+    width: Int?,
+    height: Int?,
+    onClick: () -> Unit,
+    content: @Composable BoxScope.(Dp, Dp) -> Unit
+) {
     BoxWithConstraints(
         Modifier
             .fillMaxWidth()
@@ -515,17 +589,17 @@ private fun SizedImage(url: String, width: Int?, height: Int?, description: Stri
             displayHeight = (h * scale).dp
         } else {
             displayWidth = availableWidth.dp
-            displayHeight = (availableWidth * 0.65f).dp
+            displayHeight = (availableWidth * 0.6f).dp
         }
-        AsyncImage(
-            model = url,
-            contentDescription = description,
-            contentScale = ContentScale.Fit,
-            modifier = Modifier
+        Box(
+            Modifier
                 .size(displayWidth, displayHeight)
                 .clip(RoundedCornerShape(8.dp))
-                .clickable(onClick = onClick)
-        )
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            content(displayWidth, displayHeight)
+        }
     }
 }
 

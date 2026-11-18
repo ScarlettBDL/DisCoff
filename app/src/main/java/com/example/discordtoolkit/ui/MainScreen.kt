@@ -58,8 +58,6 @@ import com.example.discordtoolkit.discord.DUser
 import com.example.discordtoolkit.discord.DmEntry
 import com.example.discordtoolkit.ui.theme.DcColors
 
-private enum class Section { GUILD, DMS }
-
 private class ToolInfo(val id: String, val title: String, val description: String)
 
 private val tools = listOf(
@@ -76,11 +74,10 @@ private fun railColor(id: String): Color =
 
 @Composable
 fun MainScreen(state: UiState, vm: AppViewModel) {
-    var section by remember { mutableStateOf(Section.GUILD) }
-    var showTools by remember { mutableStateOf(false) }
+    // Qué panel se ve (DMs / herramientas) vive en el ViewModel para que sobreviva al abrir un chat o una herramienta.
     val guild = state.guilds.firstOrNull { it.id == state.selectedGuildId }
 
-    BackHandler(enabled = showTools) { showTools = false }
+    BackHandler(enabled = state.showTools) { vm.showTools(false) }
 
     Row(
         Modifier
@@ -90,17 +87,10 @@ fun MainScreen(state: UiState, vm: AppViewModel) {
     ) {
         ServerRail(
             guilds = state.guilds,
-            dmsSelected = section == Section.DMS,
-            selectedGuildId = if (section == Section.GUILD) state.selectedGuildId else null,
-            onHome = {
-                section = Section.DMS
-                showTools = false
-            },
-            onSelectGuild = { id ->
-                vm.selectGuild(id)
-                section = Section.GUILD
-                showTools = false
-            }
+            dmsSelected = state.showDms,
+            selectedGuildId = if (!state.showDms) state.selectedGuildId else null,
+            onHome = { vm.showDms(true) },
+            onSelectGuild = { id -> vm.selectGuild(id) }
         )
         Column(
             Modifier
@@ -111,8 +101,13 @@ fun MainScreen(state: UiState, vm: AppViewModel) {
         ) {
             Box(Modifier.weight(1f)) {
                 when {
-                    section == Section.DMS -> DmPanel(state.dms, vm)
-                    showTools -> ToolsPanel(onBack = { showTools = false })
+                    state.showDms -> DmPanel(state.dms, vm)
+                    state.showTools -> ToolsPanel(
+                        onBack = { vm.showTools(false) },
+                        onOpenTool = { id ->
+                            if (id == "roles" && guild != null) vm.openRoles(guild.id)
+                        }
+                    )
                     guild == null -> Text(
                         "Cargando servidores… Si no aparece ninguno, el bot todavía no está en ningún server.",
                         color = DcColors.TextMuted,
@@ -122,7 +117,7 @@ fun MainScreen(state: UiState, vm: AppViewModel) {
                         guild = guild,
                         channels = state.channels[guild.id],
                         vm = vm,
-                        onOpenTools = { showTools = true }
+                        onOpenTools = { vm.showTools(true) }
                     )
                 }
             }
@@ -458,7 +453,7 @@ private fun ChannelRow(channel: DChannel, onClick: () -> Unit) {
 // ---------- Herramientas ----------
 
 @Composable
-private fun ToolsPanel(onBack: () -> Unit) {
+private fun ToolsPanel(onBack: () -> Unit, onOpenTool: (String) -> Unit) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -489,27 +484,28 @@ private fun ToolsPanel(onBack: () -> Unit) {
                 )
             }
         }
-        item {
-            Text(
-                "Próximamente: todavía no hacen nada.",
-                color = DcColors.TextMuted,
-                fontSize = 14.sp
-            )
-        }
         items(tools, key = { it.id }) { tool ->
+            val ready = tool.id == "roles"
             Column(
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
                     .background(DcColors.Surface)
+                    .clickable(enabled = ready) { onOpenTool(tool.id) }
                     .padding(16.dp)
             ) {
-                Text(
-                    tool.title,
-                    color = DcColors.TextPrimary,
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        tool.title,
+                        color = if (ready) DcColors.TextPrimary else DcColors.TextMuted,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (!ready) {
+                        Text("Próximamente", color = DcColors.TextMuted, fontSize = 12.sp)
+                    }
+                }
                 Spacer(Modifier.height(4.dp))
                 Text(tool.description, color = DcColors.TextMuted, fontSize = 14.sp)
             }

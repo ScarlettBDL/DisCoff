@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import com.example.discordtoolkit.discord.isVideoFile
 import com.example.discordtoolkit.ui.theme.DcColors
 
 /**
@@ -138,15 +139,16 @@ fun ImageViewer(url: String, filename: String, onDismiss: () -> Unit) {
     }
 }
 
-/** Descarga el archivo a Imágenes/DisCoff con el gestor de descargas del sistema. */
+/** Descarga el archivo a Imágenes/DisCoff (o Películas/DisCoff si es video) con el gestor de descargas del sistema. */
 @Suppress("DEPRECATION")
 fun downloadFile(context: Context, url: String, filename: String) {
     try {
         val safeName = filename.replace(Regex("[^A-Za-z0-9._-]"), "_").ifEmpty { "imagen" }
+        val folder = if (isVideoFile(safeName)) Environment.DIRECTORY_MOVIES else Environment.DIRECTORY_PICTURES
         val request = DownloadManager.Request(Uri.parse(url))
             .setTitle(safeName)
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationInExternalPublicDir(Environment.DIRECTORY_PICTURES, "DisCoff/$safeName")
+            .setDestinationInExternalPublicDir(folder, "DisCoff/$safeName")
         request.allowScanningByMediaScanner()
         val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         manager.enqueue(request)
