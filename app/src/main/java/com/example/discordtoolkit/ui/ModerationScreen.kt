@@ -57,7 +57,7 @@ import com.example.discordtoolkit.ui.theme.DcColors
 private enum class ModDialog { BAN, SOFTBAN, KICK, TIMEOUT, UNBAN, NICK, ROLES, BANS }
 
 /** Cuánto historial de mensajes se borra al banear. El valor está en segundos (Discord admite hasta 7 días). */
-private val banDeleteOptions = listOf(
+internal val banDeleteOptions = listOf(
     "No borrar mensajes" to 0L,
     "Última hora" to 3_600L,
     "Últimas 6 horas" to 21_600L,
@@ -68,7 +68,7 @@ private val banDeleteOptions = listOf(
 )
 
 /** Duración del mute (timeout), en milisegundos. Discord admite hasta 28 días. */
-private val timeoutOptions = listOf(
+internal val timeoutOptions = listOf(
     "60 segundos" to 60_000L,
     "5 minutos" to 300_000L,
     "10 minutos" to 600_000L,
@@ -424,7 +424,7 @@ private fun ActionItem(
 
 /** Diálogo con opciones para elegir una (con botones de radio) y confirmar. */
 @Composable
-private fun ChoiceDialog(
+internal fun ChoiceDialog(
     title: String,
     description: String,
     options: List<Pair<String, Long>>,
@@ -433,7 +433,7 @@ private fun ChoiceDialog(
     onConfirm: (Long) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var selected by remember { mutableIntStateOf(defaultIndex.coerceIn(0, options.lastIndex)) }
+    var selected by remember { mutableIntStateOf(defaultIndex.coerceIn(0, maxOf(options.lastIndex, 0))) }
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = DcColors.Surface,
@@ -460,14 +460,14 @@ private fun ChoiceDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(options[selected].second) }) { Text(confirmLabel) }
+            TextButton(onClick = { onConfirm(options[selected].second) }, enabled = options.isNotEmpty()) { Text(confirmLabel) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } }
     )
 }
 
 @Composable
-private fun ConfirmDialog(
+internal fun ConfirmDialog(
     title: String,
     text: String,
     confirmLabel: String,

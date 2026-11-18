@@ -73,7 +73,9 @@ data class UiState(
     /** Roles de cada server (id del server -> id del rol -> rol). */
     val guildRoles: Map<String, Map<String, RoleInfo>> = emptyMap(),
     /** Ids de los roles de cada miembro, con clave "idServer:idUsuario". */
-    val memberRoles: Map<String, List<String>> = emptyMap()
+    val memberRoles: Map<String, List<String>> = emptyMap(),
+    /** Herramienta extra abierta (acciones masivas, limpieza, auditoría, etc.). */
+    val tool: ToolRoute? = null
 ) {
     /** Color del nombre de un usuario: el del rol más alto (por posición) que tenga color. 0 = sin color. */
     fun nameColor(guildId: String?, userId: String): Int {
@@ -190,6 +192,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         embedDraft.reset()
         embedDraft.guildId = null
         mod.reset()
+        admin.resetAll()
         modGuildKey = null
         modReturnTo = null
         storage.clearToken()
@@ -445,6 +448,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Estado de la pantalla de moderación (ver ModState). */
     val mod = ModState()
+
+    val admin = Admin(
+        scope = viewModelScope,
+        api = { api },
+        storage = storage,
+        botId = { _state.value.me?.id },
+        notify = { notify(it) },
+        describe = { friendly(it) }
+    )
+
+    fun openTool(id: String, guildId: String) {
+        val a = api
+        if (a != null) launchQuiet { ensureRoles(a, guildId) }
+        _state.update { it.copy(tool = ToolRoute(id, guildId), openChannel = null) }
+    }
+
+    fun closeTool() {
+        _state.update { it.copy(tool = null, showTools = true) }
+    }
     private var modGuildKey: String? = null
     private var modReturnTo: ChannelRef? = null
 
@@ -554,7 +576,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun reasonOrNull(): String? = mod.reason.trim().ifEmpty { null }
 
     /** Ejecuta una acción sobre el usuario elegido. [block] devuelve el texto de éxito. */
-    private fun moderate(onDone: (String) -> Unit, block: suspend (DiscordApi, String, DUser) -> String) {
+    private fun moderate(onDone: (String) -> Unit, action: String? = null, block: suspend (DiscordApi, String, DUser) -> String) {
         val guildId = _state.value.modGuildId ?: return
         val user = mod.target ?: return
         val a = api ?: return
@@ -562,7 +584,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         mod.busy = true
         viewModelScope.launch {
             try {
-                onDone("✓ " + block(a, guildId, user))
+                val done = block(a, guildId, user)
+                if (action != null) admin.record(guildId, action, user.id, user.name, reasonOrNull())
+                onDone("✓ " + done)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -574,13 +598,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun ban(deleteSeconds: Int, onDone: (String) -> Unit) = moderate(onDone) { a, guildId, user ->
+    fun ban(deleteSeconds: Int, onDone: (String) -> Unit) = moderate(onDone, "Ban") { a, guildId, user ->
         a.banMember(guildId, user.id, deleteSeconds, reasonOrNull())
         "${user.name} fue baneado"
     }
 
     /** Banea y desbanea enseguida: sirve para borrar sus mensajes recientes sin dejarlo baneado. */
-    fun softban(deleteSeconds: Int, onDone: (String) -> Unit) = moderate(onDone) { a, guildId, user ->
+    fun softban(deleteSeconds: Int, onDone: (String) -> Unit) = moderate(onDone, "Softban") { a, guildId, user ->
         a.banMember(guildId, user.id, deleteSeconds, reasonOrNull())
         try {
             a.unbanMember(guildId, user.id, reasonOrNull())
@@ -592,18 +616,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         "Softban a ${user.name}: se borraron sus mensajes y puede volver"
     }
 
-    fun kick(onDone: (String) -> Unit) = moderate(onDone) { a, guildId, user ->
+    fun kick(onDone: (String) -> Unit) = moderate(onDone, "Expulsión") { a, guildId, user ->
         a.kickMember(guildId, user.id, reasonOrNull())
         "${user.name} fue expulsado"
     }
 
-    fun unban(onDone: (String) -> Unit) = moderate(onDone) { a, guildId, user ->
+    fun unban(onDone: (String) -> Unit) = moderate(onDone, "Desban") { a, guildId, user ->
         a.unbanMember(guildId, user.id, reasonOrNull())
         "${user.name} fue desbaneado"
     }
 
     /** Mute de Discord (timeout) por [durationMs]; Discord permite hasta 28 días. */
-    fun timeout(durationMs: Long, onDone: (String) -> Unit) = moderate(onDone) { a, guildId, user ->
+    fun timeout(durationMs: Long, onDone: (String) -> Unit) = moderate(onDone, "Mute") { a, guildId, user ->
         val format = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
         format.timeZone = java.util.TimeZone.getTimeZone("UTC")
         val until = format.format(java.util.Date(System.currentTimeMillis() + durationMs))
@@ -611,12 +635,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         "${user.name} quedó muteado"
     }
 
-    fun removeTimeout(onDone: (String) -> Unit) = moderate(onDone) { a, guildId, user ->
+    fun removeTimeout(onDone: (String) -> Unit) = moderate(onDone, "Quitar mute") { a, guildId, user ->
         a.timeoutMember(guildId, user.id, null, reasonOrNull())
         "${user.name} ya no está muteado"
     }
 
-    fun setNickname(nick: String, onDone: (String) -> Unit) = moderate(onDone) { a, guildId, user ->
+    fun setNickname(nick: String, onDone: (String) -> Unit) = moderate(onDone, "Apodo") { a, guildId, user ->
         a.setNickname(guildId, user.id, nick, reasonOrNull())
         if (nick.isBlank()) "Apodo de ${user.name} quitado" else "Apodo cambiado a ${nick.trim()}"
     }

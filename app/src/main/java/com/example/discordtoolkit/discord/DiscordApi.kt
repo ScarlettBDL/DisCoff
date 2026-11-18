@@ -354,6 +354,35 @@ class DiscordApi(private val token: String) {
         )
     }
 
+    /** Borra de a muchos (2 a 100 mensajes, de menos de 14 días). */
+    suspend fun bulkDelete(channelId: String, ids: List<String>) {
+        val payload = JSONObject().put("messages", JSONArray(ids))
+        execute {
+            request("/channels/$channelId/messages/bulk-delete")
+                .post(payload.toString().toRequestBody(jsonType))
+                .build()
+        }
+    }
+
+    /** Registro de auditoría (el bot necesita "Ver registro de auditoría"). */
+    suspend fun getAuditLog(guildId: String, limit: Int = 100): AuditLog {
+        val body = execute { request("/guilds/$guildId/audit-logs?limit=$limit").get().build() }
+        return withContext(Dispatchers.Default) {
+            val root = JSONObject(body)
+            val entries = root.optJSONArray("audit_log_entries").mapObjects {
+                AuditEntry(
+                    id = it.optString("id"),
+                    actorId = it.str("user_id") ?: "",
+                    targetId = it.str("target_id"),
+                    action = it.optInt("action_type", 0),
+                    reason = it.str("reason")
+                )
+            }
+            val users = root.optJSONArray("users").mapObjects { Parse.user(it) }.associateBy { it.id }
+            AuditLog(entries, users)
+        }
+    }
+
     companion object {
         private const val BASE = "https://discord.com/api/v10"
     }

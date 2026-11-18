@@ -63,4 +63,11 @@ class Storage(context: Context) {
         }
         prefs?.edit()?.putString("dms_$botId", arr.toString())?.apply()
     }
+
+    /** Guarda un texto cualquiera (JSON) cifrado; sirve para el registro de moderación y las plantillas. */
+    fun blob(key: String): String? = prefs?.getString(key, null)
+
+    fun saveBlob(key: String, value: String) {
+        prefs?.edit()?.putString(key, value)?.apply()
+    }
 }

@@ -58,13 +58,18 @@ import com.example.discordtoolkit.discord.DUser
 import com.example.discordtoolkit.discord.DmEntry
 import com.example.discordtoolkit.ui.theme.DcColors
 
+private val readyTools = setOf("roles", "embeds", "mod", "bulk", "clear", "audit", "modlog")
+
 private class ToolInfo(val id: String, val title: String, val description: String)
 
 private val tools = listOf(
     ToolInfo("roles", "Roles masivos", "Creá varios roles de una sola vez"),
     ToolInfo("embeds", "Embeds", "Armá y mandá embeds sin webhooks"),
     ToolInfo("mod", "Moderación", "Ban, softban, mute y más"),
-    ToolInfo("msgs", "Mensajes", "Leé canales y enviá mensajes")
+    ToolInfo("bulk", "Acciones masivas", "Ban, kick o mute a una lista de IDs"),
+    ToolInfo("clear", "Limpiar mensajes", "Borrá mensajes de un canal de una vez"),
+    ToolInfo("audit", "Registro de auditoría", "Mirá qué pasó en el servidor"),
+    ToolInfo("modlog", "Registro de moderación", "Historial de lo que moderaste")
 )
 
 private val railPalette = listOf(0xFF3B3F8F, 0xFF1F6F54, 0xFF8F3B3B, 0xFF6B4A1E, 0xFF2E5A7A, 0xFF5A2E7A)
@@ -110,6 +115,7 @@ fun MainScreen(state: UiState, vm: AppViewModel) {
                                     "roles" -> vm.openRoles(guild.id)
                                     "embeds" -> vm.openEmbeds(guild.id)
                                     "mod" -> vm.openModeration(guild.id)
+                                    else -> vm.openTool(id, guild.id)
                                 }
                             }
                         }
@@ -491,7 +497,7 @@ private fun ToolsPanel(onBack: () -> Unit, onOpenTool: (String) -> Unit) {
             }
         }
         items(tools, key = { it.id }) { tool ->
-            val ready = tool.id == "roles" || tool.id == "embeds" || tool.id == "mod"
+            val ready = tool.id in readyTools
             Column(
                 Modifier
                     .fillMaxWidth()

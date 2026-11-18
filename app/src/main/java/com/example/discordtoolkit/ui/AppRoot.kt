@@ -37,6 +37,7 @@ fun AppRoot(state: UiState, vm: AppViewModel) {
             state.rolesGuildId != null -> RolesScreen(state, vm)
             state.embedsGuildId != null -> EmbedScreen(state, vm)
             state.modGuildId != null -> ModerationScreen(state, vm)
+            state.tool != null -> ToolHost(state, vm)
             else -> MainScreen(state, vm)
         }
         val notice = state.notice

@@ -330,3 +330,12 @@ object Parse {
         )
     }
 }
+
+
+/** Una línea del registro de auditoría de Discord. */
+data class AuditEntry(val id: String, val actorId: String, val targetId: String?, val action: Int, val reason: String?)
+
+data class AuditLog(val entries: List<AuditEntry>, val users: Map<String, DUser>)
+
+/** Momento de creación de cualquier id de Discord (snowflake), en milisegundos. */
+fun snowflakeMs(id: String): Long = ((id.toLongOrNull() ?: 0L) shr 22) + 1420070400000L
