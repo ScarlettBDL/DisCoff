@@ -109,6 +109,7 @@ fun MainScreen(state: UiState, vm: AppViewModel) {
                                 when (id) {
                                     "roles" -> vm.openRoles(guild.id)
                                     "embeds" -> vm.openEmbeds(guild.id)
+                                    "mod" -> vm.openModeration(guild.id)
                                 }
                             }
                         }
@@ -490,7 +491,7 @@ private fun ToolsPanel(onBack: () -> Unit, onOpenTool: (String) -> Unit) {
             }
         }
         items(tools, key = { it.id }) { tool ->
-            val ready = tool.id == "roles" || tool.id == "embeds"
+            val ready = tool.id == "roles" || tool.id == "embeds" || tool.id == "mod"
             Column(
                 Modifier
                     .fillMaxWidth()

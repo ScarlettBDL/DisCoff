@@ -104,7 +104,22 @@ data class Embed(
 )
 
 /** Un rol de un servidor, con lo necesario para pintar el nombre de sus miembros. */
-data class RoleInfo(val id: String, val name: String, val color: Int, val position: Int)
+data class RoleInfo(
+    val id: String,
+    val name: String,
+    val color: Int,
+    val position: Int,
+    /** Roles de integraciones/bots: no se pueden dar ni quitar a mano. */
+    val managed: Boolean = false
+)
+
+/** Lo que Discord sabe de un miembro dentro de un server. */
+data class MemberInfo(val roles: List<String>, val nick: String?, val timeoutUntilMs: Long?) {
+    fun isTimedOut(now: Long = System.currentTimeMillis()): Boolean = timeoutUntilMs != null && timeoutUntilMs > now
+}
+
+/** Un usuario baneado y el motivo (si se dejó uno). */
+data class BanEntry(val user: DUser, val reason: String?)
 
 data class ReplySnippet(val authorName: String, val content: String)
 
@@ -261,8 +276,19 @@ object Parse {
         id = o.optString("id"),
         name = o.optString("name", ""),
         color = o.optInt("color", 0),
-        position = o.optInt("position", 0)
+        position = o.optInt("position", 0),
+        managed = o.optBoolean("managed", false)
     )
+
+    fun memberInfo(o: JSONObject): MemberInfo {
+        val arr = o.optJSONArray("roles")
+        val roles = if (arr == null) emptyList() else (0 until arr.length()).map { arr.optString(it) }
+        val until = o.str("communication_disabled_until")?.let { parseIso(it) }?.takeIf { it > 0L }
+        return MemberInfo(roles = roles, nick = o.str("nick"), timeoutUntilMs = until)
+    }
+
+    fun banEntry(o: JSONObject): BanEntry =
+        BanEntry(user = user(o.getJSONObject("user")), reason = o.str("reason"))
 
     private fun cleanContent(raw: String, mentions: JSONArray?): String {
         var text = raw

@@ -408,7 +408,7 @@ fun EmbedScreen(state: UiState, vm: AppViewModel) {
 }
 
 @Composable
-private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
+internal fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -423,7 +423,7 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
 }
 
 @Composable
-private fun FormField(
+internal fun FormField(
     label: String,
     value: String,
     onChange: (String) -> Unit,

@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.discordtoolkit.data.Storage
 import com.example.discordtoolkit.discord.DChannel
 import com.example.discordtoolkit.discord.DGuild
+import com.example.discordtoolkit.discord.BanEntry
 import com.example.discordtoolkit.discord.DUser
 import com.example.discordtoolkit.discord.DiscordApi
 import com.example.discordtoolkit.discord.DmEntry
@@ -67,6 +68,8 @@ data class UiState(
     /** Si no es null, está abierta la herramienta de embeds de ese server. */
     val embedsGuildId: String? = null,
     val sendingEmbed: Boolean = false,
+    /** Si no es null, está abierta la herramienta de moderación de ese server. */
+    val modGuildId: String? = null,
     /** Roles de cada server (id del server -> id del rol -> rol). */
     val guildRoles: Map<String, Map<String, RoleInfo>> = emptyMap(),
     /** Ids de los roles de cada miembro, con clave "idServer:idUsuario". */
@@ -186,6 +189,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         draftsGuildId = null
         embedDraft.reset()
         embedDraft.guildId = null
+        mod.reset()
+        modGuildKey = null
+        modReturnTo = null
         storage.clearToken()
         _state.value = UiState(phase = Phase.LOGIN)
     }
@@ -431,6 +437,241 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 onDone(friendly(e))
             } finally {
                 _state.update { it.copy(sendingEmbed = false) }
+            }
+        }
+    }
+
+    // ---------- Moderación ----------
+
+    /** Estado de la pantalla de moderación (ver ModState). */
+    val mod = ModState()
+    private var modGuildKey: String? = null
+    private var modReturnTo: ChannelRef? = null
+
+    /**
+     * Abre la moderación de un server. Si viene de un chat, [returnTo] es el chat al que se vuelve;
+     * [preselect] deja ya elegido al usuario.
+     */
+    fun openModeration(guildId: String, preselect: DUser? = null, returnTo: ChannelRef? = null) {
+        if (modGuildKey != guildId) {
+            mod.reset()
+            modGuildKey = guildId
+        }
+        modReturnTo = returnTo
+        _state.update {
+            it.copy(
+                modGuildId = guildId,
+                openChannel = null,
+                messages = emptyList(),
+                replyingTo = null,
+                editing = null
+            )
+        }
+        val a = api
+        if (a != null) launchQuiet { ensureRoles(a, guildId) }
+        if (preselect != null) selectTarget(preselect)
+    }
+
+    fun closeModeration() {
+        val back = modReturnTo
+        modReturnTo = null
+        if (back != null) {
+            _state.update { it.copy(modGuildId = null) }
+            openChannel(back)
+        } else {
+            _state.update { it.copy(modGuildId = null, showTools = true) }
+        }
+    }
+
+    /** Busca por ID (solo números) o por nombre entre los miembros del server. */
+    fun searchUsers() {
+        val guildId = _state.value.modGuildId ?: return
+        val text = mod.query.trim()
+        if (text.isEmpty()) return
+        val a = api ?: return
+        if (mod.searching) return
+        mod.searching = true
+        mod.results = emptyList()
+        viewModelScope.launch {
+            try {
+                if (text.all { it.isDigit() }) {
+                    mod.results = listOf(a.getUser(text))
+                } else {
+                    val found = a.searchMembers(guildId, text)
+                    mod.results = found
+                    if (found.isEmpty()) notify("No se encontró a nadie con ese nombre")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                notify(searchError(e, text))
+            } finally {
+                mod.searching = false
+            }
+        }
+    }
+
+    private fun searchError(e: Exception, text: String): String = when {
+        e is DiscordApi.ApiException && e.code == 404 -> "No existe un usuario con el ID $text"
+        e is DiscordApi.ApiException && (e.code == 403 || e.code == 400) && !text.all { it.isDigit() } ->
+            "Discord no dejó buscar por nombre (hace falta activar el Server Members Intent del bot). Probá con el ID."
+        else -> friendly(e)
+    }
+
+    fun selectTarget(user: DUser) {
+        mod.target = user
+        mod.member = null
+        mod.memberLoaded = false
+        mod.results = emptyList()
+        refreshTarget()
+    }
+
+    fun clearTarget() {
+        mod.clearTarget()
+    }
+
+    /** Vuelve a pedir los datos del usuario elegido (roles, apodo, mute); null si ya no está en el server. */
+    private fun refreshTarget() {
+        val guildId = _state.value.modGuildId ?: return
+        val user = mod.target ?: return
+        val a = api ?: return
+        launchQuiet {
+            val info = a.getMember(guildId, user.id)
+            if (mod.target?.id == user.id) {
+                mod.member = info
+                mod.memberLoaded = true
+            }
+            if (info != null) setMemberRoles(guildId, user.id, info.roles)
+        }
+    }
+
+    private fun modError(e: Exception): String = when {
+        e is DiscordApi.ApiException && e.code == 403 ->
+            "Sin permisos: el bot necesita el permiso y un rol más alto que el del usuario"
+        else -> friendly(e)
+    }
+
+    private fun reasonOrNull(): String? = mod.reason.trim().ifEmpty { null }
+
+    /** Ejecuta una acción sobre el usuario elegido. [block] devuelve el texto de éxito. */
+    private fun moderate(onDone: (String) -> Unit, block: suspend (DiscordApi, String, DUser) -> String) {
+        val guildId = _state.value.modGuildId ?: return
+        val user = mod.target ?: return
+        val a = api ?: return
+        if (mod.busy) return
+        mod.busy = true
+        viewModelScope.launch {
+            try {
+                onDone("✓ " + block(a, guildId, user))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                onDone("✗ " + modError(e))
+            } finally {
+                mod.busy = false
+                refreshTarget()
+            }
+        }
+    }
+
+    fun ban(deleteSeconds: Int, onDone: (String) -> Unit) = moderate(onDone) { a, guildId, user ->
+        a.banMember(guildId, user.id, deleteSeconds, reasonOrNull())
+        "${user.name} fue baneado"
+    }
+
+    /** Banea y desbanea enseguida: sirve para borrar sus mensajes recientes sin dejarlo baneado. */
+    fun softban(deleteSeconds: Int, onDone: (String) -> Unit) = moderate(onDone) { a, guildId, user ->
+        a.banMember(guildId, user.id, deleteSeconds, reasonOrNull())
+        try {
+            a.unbanMember(guildId, user.id, reasonOrNull())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw IllegalStateException("Se baneó pero no se pudo desbanear: " + modError(e))
+        }
+        "Softban a ${user.name}: se borraron sus mensajes y puede volver"
+    }
+
+    fun kick(onDone: (String) -> Unit) = moderate(onDone) { a, guildId, user ->
+        a.kickMember(guildId, user.id, reasonOrNull())
+        "${user.name} fue expulsado"
+    }
+
+    fun unban(onDone: (String) -> Unit) = moderate(onDone) { a, guildId, user ->
+        a.unbanMember(guildId, user.id, reasonOrNull())
+        "${user.name} fue desbaneado"
+    }
+
+    /** Mute de Discord (timeout) por [durationMs]; Discord permite hasta 28 días. */
+    fun timeout(durationMs: Long, onDone: (String) -> Unit) = moderate(onDone) { a, guildId, user ->
+        val format = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
+        format.timeZone = java.util.TimeZone.getTimeZone("UTC")
+        val until = format.format(java.util.Date(System.currentTimeMillis() + durationMs))
+        a.timeoutMember(guildId, user.id, until, reasonOrNull())
+        "${user.name} quedó muteado"
+    }
+
+    fun removeTimeout(onDone: (String) -> Unit) = moderate(onDone) { a, guildId, user ->
+        a.timeoutMember(guildId, user.id, null, reasonOrNull())
+        "${user.name} ya no está muteado"
+    }
+
+    fun setNickname(nick: String, onDone: (String) -> Unit) = moderate(onDone) { a, guildId, user ->
+        a.setNickname(guildId, user.id, nick, reasonOrNull())
+        if (nick.isBlank()) "Apodo de ${user.name} quitado" else "Apodo cambiado a ${nick.trim()}"
+    }
+
+    /** Da o quita un rol. Se refleja al instante y, si falla, se vuelve a pedir el estado real. */
+    fun toggleRole(roleId: String, add: Boolean, onDone: (String) -> Unit) {
+        val current = mod.member ?: return
+        if (mod.busy) return
+        mod.member = current.copy(roles = if (add) current.roles + roleId else current.roles - roleId)
+        moderate(onDone) { a, guildId, user ->
+            if (add) {
+                a.addMemberRole(guildId, user.id, roleId, reasonOrNull())
+            } else {
+                a.removeMemberRole(guildId, user.id, roleId, reasonOrNull())
+            }
+            val roleName = _state.value.guildRoles[guildId]?.get(roleId)?.name ?: "rol"
+            if (add) "Se le dio “$roleName” a ${user.name}" else "Se le quitó “$roleName” a ${user.name}"
+        }
+    }
+
+    fun loadBans() {
+        val guildId = _state.value.modGuildId ?: return
+        val a = api ?: return
+        if (mod.loadingBans) return
+        mod.loadingBans = true
+        viewModelScope.launch {
+            try {
+                mod.bans = a.getBans(guildId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                mod.bans = emptyList()
+                notify(modError(e))
+            } finally {
+                mod.loadingBans = false
+            }
+        }
+    }
+
+    fun unbanEntry(entry: BanEntry, onDone: (String) -> Unit) {
+        val guildId = _state.value.modGuildId ?: return
+        val a = api ?: return
+        if (mod.busy) return
+        mod.busy = true
+        viewModelScope.launch {
+            try {
+                a.unbanMember(guildId, entry.user.id, reasonOrNull())
+                mod.bans = mod.bans?.filter { it.user.id != entry.user.id }
+                onDone("✓ ${entry.user.name} fue desbaneado")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                onDone("✗ " + modError(e))
+            } finally {
+                mod.busy = false
             }
         }
     }

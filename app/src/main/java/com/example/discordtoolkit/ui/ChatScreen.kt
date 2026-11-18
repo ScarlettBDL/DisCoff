@@ -222,6 +222,13 @@ fun ChatScreen(state: UiState, vm: AppViewModel) {
                             actionsFor = null
                         }
                     }
+                    val gid = channel.guildId
+                    if (!channel.isDm && gid != null && target.author.id != state.me?.id) {
+                        ActionRow("Moderar a ${target.author.name}") {
+                            vm.openModeration(gid, target.author, ChannelRef(channel.id, channel.title, false, gid))
+                            actionsFor = null
+                        }
+                    }
                 }
             }
         )

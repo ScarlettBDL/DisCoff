@@ -137,6 +137,94 @@ class DiscordApi(private val token: String) {
         }
     }
 
+    // ---------- Moderación ----------
+
+    /** Agrega el motivo que queda en el registro de auditoría (va codificado en la cabecera). */
+    private fun withReason(builder: Request.Builder, reason: String?): Request.Builder {
+        val text = reason?.trim().orEmpty()
+        if (text.isEmpty()) return builder
+        return builder.header("X-Audit-Log-Reason", URLEncoder.encode(text.take(512), "UTF-8").replace("+", "%20"))
+    }
+
+    /** Banea (aunque el usuario ya no esté en el server). [deleteSeconds] borra sus mensajes recientes (0 a 7 días). */
+    suspend fun banMember(guildId: String, userId: String, deleteSeconds: Int, reason: String?) {
+        val payload = JSONObject().put("delete_message_seconds", deleteSeconds)
+        execute {
+            withReason(request("/guilds/$guildId/bans/$userId"), reason)
+                .put(payload.toString().toRequestBody(jsonType))
+                .build()
+        }
+    }
+
+    suspend fun unbanMember(guildId: String, userId: String, reason: String?) {
+        execute { withReason(request("/guilds/$guildId/bans/$userId"), reason).delete().build() }
+    }
+
+    suspend fun kickMember(guildId: String, userId: String, reason: String?) {
+        execute { withReason(request("/guilds/$guildId/members/$userId"), reason).delete().build() }
+    }
+
+    /** Mute de Discord ("timeout"): [untilIso] en UTC, máximo 28 días; null lo quita. */
+    suspend fun timeoutMember(guildId: String, userId: String, untilIso: String?, reason: String?) {
+        val payload = JSONObject().put("communication_disabled_until", untilIso ?: JSONObject.NULL)
+        execute {
+            withReason(request("/guilds/$guildId/members/$userId"), reason)
+                .patch(payload.toString().toRequestBody(jsonType))
+                .build()
+        }
+    }
+
+    /** Cambia el apodo en el server; vacío o null lo quita. */
+    suspend fun setNickname(guildId: String, userId: String, nick: String?, reason: String?) {
+        val payload = JSONObject().put("nick", if (nick.isNullOrBlank()) JSONObject.NULL else nick.trim())
+        execute {
+            withReason(request("/guilds/$guildId/members/$userId"), reason)
+                .patch(payload.toString().toRequestBody(jsonType))
+                .build()
+        }
+    }
+
+    suspend fun addMemberRole(guildId: String, userId: String, roleId: String, reason: String?) {
+        execute {
+            withReason(request("/guilds/$guildId/members/$userId/roles/$roleId"), reason)
+                .put("".toRequestBody())
+                .build()
+        }
+    }
+
+    suspend fun removeMemberRole(guildId: String, userId: String, roleId: String, reason: String?) {
+        execute {
+            withReason(request("/guilds/$guildId/members/$userId/roles/$roleId"), reason)
+                .delete()
+                .build()
+        }
+    }
+
+    /** Datos del miembro en el server, o null si no está (o es un webhook). */
+    suspend fun getMember(guildId: String, userId: String): MemberInfo? {
+        val body = try {
+            execute { request("/guilds/$guildId/members/$userId").get().build() }
+        } catch (e: ApiException) {
+            if (e.code == 404) return null
+            throw e
+        }
+        return Parse.memberInfo(JSONObject(body))
+    }
+
+    /** Busca miembros por nombre o apodo. Discord puede exigir el "Server Members Intent" para esto. */
+    suspend fun searchMembers(guildId: String, query: String): List<DUser> {
+        val q = URLEncoder.encode(query, "UTF-8")
+        val body = execute { request("/guilds/$guildId/members/search?query=$q&limit=10").get().build() }
+        return JSONArray(body).mapObjects { m -> Parse.user(m.getJSONObject("user")) }
+    }
+
+    suspend fun getBans(guildId: String): List<BanEntry> {
+        val body = execute { request("/guilds/$guildId/bans?limit=200").get().build() }
+        return withContext(Dispatchers.Default) {
+            JSONArray(body).mapObjects { Parse.banEntry(it) }
+        }
+    }
+
     suspend fun getUser(userId: String): DUser {
         val body = execute { request("/users/$userId").get().build() }
         return Parse.user(JSONObject(body))
