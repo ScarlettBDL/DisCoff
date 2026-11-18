@@ -68,6 +68,9 @@ fun EmbedScreen(state: UiState, vm: AppViewModel) {
     var pickChannel by remember { mutableStateOf(false) }
     var pickColor by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
+    var showTemplates by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { vm.templates.load() }
+    val editing = d.editingMessageId != null
 
     BackHandler { vm.closeEmbeds() }
 
@@ -139,7 +142,7 @@ fun EmbedScreen(state: UiState, vm: AppViewModel) {
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(14.dp))
                     .background(DcColors.Surface)
-                    .clickable { pickChannel = true }
+                    .clickable(enabled = !editing) { pickChannel = true }
                     .padding(horizontal = 14.dp, vertical = 14.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -325,18 +328,49 @@ fun EmbedScreen(state: UiState, vm: AppViewModel) {
                     )
                 ) { Text("Limpiar") }
                 Button(
+                    onClick = { showTemplates = true },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = DcColors.SurfaceHigh,
+                        contentColor = DcColors.TextPrimary
+                    )
+                ) { Text("Plantillas") }
+                Button(
                     onClick = {
                         vm.sendEmbed { error ->
-                            Toast.makeText(context, error ?: "Embed enviado ✓", Toast.LENGTH_LONG).show()
+                            Toast.makeText(
+                                context,
+                                error ?: if (editing) "Embed editado ✓" else "Embed enviado ✓",
+                                Toast.LENGTH_LONG
+                            ).show()
                         }
                     },
                     enabled = !state.sendingEmbed && d.channelId != null,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text(if (state.sendingEmbed) "Enviando…" else "Enviar embed")
+                    Text(if (state.sendingEmbed) "Enviando…" else if (editing) "Guardar cambios" else "Enviar embed")
                 }
             }
         }
+    }
+
+    if (showTemplates) {
+        val saved = vm.templates.embeds
+        TemplatesDialog(
+            title = "Plantillas de embed",
+            items = saved.map { it.name },
+            canSave = true,
+            onSave = { vm.templates.save(Templates.EMBED, it, d.toTemplate()) },
+            onLoad = { i ->
+                val keepChannel = d.channelId
+                val keepEditing = d.editingMessageId
+                d.loadTemplate(saved[i].data)
+                d.channelId = keepChannel
+                d.editingMessageId = keepEditing
+                showTemplates = false
+            },
+            onDelete = { vm.templates.delete(Templates.EMBED, it) },
+            onDismiss = { showTemplates = false }
+        )
     }
 
     if (pickChannel) {

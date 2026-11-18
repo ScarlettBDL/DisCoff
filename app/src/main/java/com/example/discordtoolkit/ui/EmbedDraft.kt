@@ -44,6 +44,9 @@ class EmbedDraft {
     var guildId: String? = null
     var channelId by mutableStateOf<String?>(null)
 
+    /** Si no es null, se está editando ese mensaje ya enviado en vez de armar uno nuevo. */
+    var editingMessageId by mutableStateOf<String?>(null)
+
     var content by mutableStateOf("")
 
     var authorName by mutableStateOf("")
@@ -93,6 +96,75 @@ class EmbedDraft {
     fun reset() {
         clear()
         channelId = null
+        editingMessageId = null
+    }
+
+    /** Carga un embed ya enviado para poder editarlo. */
+    fun loadFromEmbed(e: Embed, text: String) {
+        clear()
+        content = text
+        authorName = e.authorName.orEmpty()
+        authorUrl = e.authorUrl.orEmpty()
+        authorIconUrl = e.authorIconUrl.orEmpty()
+        title = e.title.orEmpty()
+        titleUrl = e.linkUrl.orEmpty()
+        description = e.description.orEmpty()
+        color = e.color ?: 0
+        thumbnailUrl = e.thumbnailUrl.orEmpty()
+        imageUrl = e.imageUrl.orEmpty()
+        footerText = e.footerText.orEmpty()
+        footerIconUrl = e.footerIconUrl.orEmpty()
+        timestamp = e.timeLabel != null
+        e.fields.take(MAX_FIELDS).forEach { f ->
+            addField()
+            fields.last().also {
+                it.name = f.name
+                it.value = f.value
+                it.inline = f.inline
+            }
+        }
+    }
+
+    /** El borrador completo (texto + embed) para guardarlo como plantilla. */
+    fun toTemplate(): JSONObject {
+        val o = toJson()
+        o.remove("timestamp")
+        o.put("ts", timestamp)
+        o.put("content", content)
+        return o
+    }
+
+    fun loadTemplate(o: JSONObject) {
+        clear()
+        content = o.optString("content")
+        title = o.optString("title")
+        titleUrl = o.optString("url")
+        description = o.optString("description")
+        color = o.optInt("color", 0)
+        timestamp = o.optBoolean("ts", false)
+        o.optJSONObject("author")?.let {
+            authorName = it.optString("name")
+            authorUrl = it.optString("url")
+            authorIconUrl = it.optString("icon_url")
+        }
+        thumbnailUrl = o.optJSONObject("thumbnail")?.optString("url").orEmpty()
+        imageUrl = o.optJSONObject("image")?.optString("url").orEmpty()
+        o.optJSONObject("footer")?.let {
+            footerText = it.optString("text")
+            footerIconUrl = it.optString("icon_url")
+        }
+        val arr = o.optJSONArray("fields")
+        if (arr != null) {
+            for (i in 0 until minOf(arr.length(), MAX_FIELDS)) {
+                val f = arr.optJSONObject(i) ?: continue
+                addField()
+                fields.last().also {
+                    it.name = f.optString("name")
+                    it.value = f.optString("value")
+                    it.inline = f.optBoolean("inline", false)
+                }
+            }
+        }
     }
 
     private fun nz(text: String): String? = text.trim().takeIf { it.isNotEmpty() }

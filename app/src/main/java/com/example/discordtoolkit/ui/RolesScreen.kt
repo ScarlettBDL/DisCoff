@@ -78,12 +78,30 @@ fun RolesScreen(state: UiState, vm: AppViewModel) {
     val context = LocalContext.current
     var colorFor by remember { mutableStateOf<RoleDraft?>(null) }
     var permsFor by remember { mutableStateOf<RoleDraft?>(null) }
+    var showTemplates by remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(Unit) { vm.templates.load() }
 
     BackHandler { vm.closeRoles() }
 
     fun copy(text: String, label: String) {
         clipboard.setText(AnnotatedString(text))
         Toast.makeText(context, label, Toast.LENGTH_SHORT).show()
+    }
+
+    if (showTemplates) {
+        val saved = vm.templates.roleSets
+        TemplatesDialog(
+            title = "Plantillas de roles",
+            items = saved.map { it.name },
+            canSave = drafts.any { it.name.isNotBlank() },
+            onSave = { name -> vm.roleSetTemplate()?.let { vm.templates.save(Templates.ROLES, name, it) } },
+            onLoad = { i ->
+                vm.loadRoleSet(saved[i].data)
+                showTemplates = false
+            },
+            onDelete = { vm.templates.delete(Templates.ROLES, it) },
+            onDismiss = { showTemplates = false }
+        )
     }
 
     val pendingCount = drafts.count { it.status is RoleStatus.Draft || it.status is RoleStatus.Failed }
@@ -206,6 +224,14 @@ fun RolesScreen(state: UiState, vm: AppViewModel) {
             ) {
                 Text(if (state.creatingRoles) "Creando roles…" else "Crear roles ($pendingCount)")
             }
+            Button(
+                onClick = { showTemplates = true },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = DcColors.SurfaceHigh,
+                    contentColor = DcColors.TextPrimary
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Plantillas de roles") }
             if (created.isNotEmpty()) {
                 Button(
                     onClick = {

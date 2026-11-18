@@ -193,6 +193,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         embedDraft.guildId = null
         mod.reset()
         admin.resetAll()
+        templates.reset()
         modGuildKey = null
         modReturnTo = null
         storage.clearToken()
@@ -339,6 +340,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(rolesGuildId = null, showTools = true) }
     }
 
+    /** Los roles pendientes como plantilla (nombre, color y permisos). */
+    fun roleSetTemplate(): JSONObject? {
+        val items = roleDrafts.filter { it.name.isNotBlank() }
+        if (items.isEmpty()) return null
+        val arr = org.json.JSONArray()
+        items.forEach {
+            arr.put(JSONObject().put("n", it.name.trim()).put("c", it.color).put("p", it.permissions.toString()))
+        }
+        return JSONObject().put("roles", arr)
+    }
+
+    /** Agrega a la lista los roles de una plantilla guardada. */
+    fun loadRoleSet(data: JSONObject) {
+        val arr = data.optJSONArray("roles") ?: return
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            draftCounter++
+            val d = RoleDraft(draftCounter)
+            d.name = o.optString("n")
+            d.color = o.optInt("c", 0)
+            d.permissions = o.optString("p", "0").toLongOrNull() ?: 0L
+            d.focusPending = false
+            roleDrafts.add(d)
+        }
+    }
+
     fun addRoleDraft() {
         draftCounter++
         roleDrafts.add(RoleDraft(draftCounter))
@@ -393,7 +420,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openEmbeds(guildId: String) {
         // El borrador es de un server: si se abre otro, se empieza de cero.
-        if (embedDraft.guildId != guildId) {
+        if (embedDraft.guildId != guildId || embedDraft.editingMessageId != null) {
             embedDraft.reset()
             embedDraft.guildId = guildId
         }
@@ -407,7 +434,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun closeEmbeds() {
-        _state.update { it.copy(embedsGuildId = null, showTools = true) }
+        val editingChannel = if (embedDraft.editingMessageId != null) embedDraft.channelId else null
+        if (editingChannel != null) {
+            // Se estaba editando un mensaje: se vuelve al chat de ese canal.
+            val guildId = embedDraft.guildId
+            val name = _state.value.channels[guildId]?.firstOrNull { it.id == editingChannel }?.name ?: "canal"
+            embedDraft.reset()
+            embedDraft.guildId = null
+            _state.update { it.copy(embedsGuildId = null) }
+            openChannel(ChannelRef(editingChannel, name, false, guildId))
+        } else {
+            _state.update { it.copy(embedsGuildId = null, showTools = true) }
+        }
+    }
+
+    /** Abre un embed ya enviado en la herramienta de embeds para editarlo. */
+    fun editEmbedMessage(m: Message) {
+        val guildId = m.guildId ?: _state.value.openChannel?.guildId ?: return
+        val embed = m.embeds.firstOrNull() ?: return
+        embedDraft.reset()
+        embedDraft.guildId = guildId
+        embedDraft.channelId = m.channelId
+        embedDraft.editingMessageId = m.id
+        embedDraft.loadFromEmbed(embed, m.rawContent)
+        _state.update { it.copy(embedsGuildId = guildId, openChannel = null, messages = emptyList()) }
     }
 
     /** Manda el embed al canal elegido. [onDone] recibe el error, o null si salió bien. */
@@ -432,8 +482,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(sendingEmbed = true) }
         viewModelScope.launch {
             try {
-                a.sendEmbed(channelId, draft.content, draft.toJson())
-                onDone(null)
+                val editId = draft.editingMessageId
+                if (editId != null) {
+                    a.editEmbed(channelId, editId, draft.content, draft.toJson())
+                    onDone(null)
+                    closeEmbeds()
+                } else {
+                    a.sendEmbed(channelId, draft.content, draft.toJson())
+                    onDone(null)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -457,6 +514,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         notify = { notify(it) },
         describe = { friendly(it) }
     )
+
+    val manager = Manager(
+        scope = viewModelScope,
+        api = { api },
+        describe = { friendly(it) },
+        onRoles = { gid, list ->
+            _state.update { it.copy(guildRoles = it.guildRoles + (gid to list.associateBy { r -> r.id })) }
+        },
+        onChannels = { gid, list ->
+            _state.update { it.copy(channels = it.channels + (gid to list)) }
+        }
+    )
+
+    val templates = Templates(storage) { _state.value.me?.id }
 
     fun openTool(id: String, guildId: String) {
         val a = api

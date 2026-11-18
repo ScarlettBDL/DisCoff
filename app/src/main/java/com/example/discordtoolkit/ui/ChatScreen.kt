@@ -212,6 +212,12 @@ fun ChatScreen(state: UiState, vm: AppViewModel) {
                             actionsFor = null
                         }
                     }
+                    if (mine && target.embeds.isNotEmpty() && channel.guildId != null) {
+                        ActionRow("Editar embed") {
+                            vm.editEmbedMessage(target)
+                            actionsFor = null
+                        }
+                    }
                     ActionRow("Borrar") {
                         vm.deleteMessage(target)
                         actionsFor = null

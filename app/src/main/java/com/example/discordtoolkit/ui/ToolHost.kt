@@ -53,6 +53,7 @@ fun ToolHost(state: UiState, vm: AppViewModel) {
         "clear" -> ClearScreen(state, vm, route.guildId)
         "audit" -> AuditScreen(state, vm, route.guildId)
         "modlog" -> ModLogScreen(state, vm, route.guildId)
+        "manage" -> ManageScreen(state, vm, route.guildId)
         else -> ToolScaffold("Herramienta", null, vm::closeTool) {
             Text("Esta herramienta todavía no está disponible.", color = DcColors.TextMuted)
         }
@@ -404,5 +405,246 @@ fun ModLogScreen(state: UiState, vm: AppViewModel, guildId: String) {
             onConfirm = { confirm = false; ad.clearLog(guildId) },
             onDismiss = { confirm = false }
         )
+    }
+}
+
+// ---------------------------------------------------------------- Roles y canales
+
+private sealed interface ManageDialog {
+    data class EditRole(val role: com.example.discordtoolkit.discord.RoleInfo) : ManageDialog
+    data class DeleteRole(val role: com.example.discordtoolkit.discord.RoleInfo) : ManageDialog
+    data class EditChannel(val channel: com.example.discordtoolkit.discord.DChannel) : ManageDialog
+    data class DeleteChannel(val channel: com.example.discordtoolkit.discord.DChannel) : ManageDialog
+    data object NewChannel : ManageDialog
+}
+
+@Composable
+fun ManageScreen(state: UiState, vm: AppViewModel, guildId: String) {
+    val mg = vm.manager
+    var dialog by remember { mutableStateOf<ManageDialog?>(null) }
+
+    val roles = remember(state.guildRoles, guildId) {
+        (state.guildRoles[guildId] ?: emptyMap()).values
+            .filter { it.id != guildId }
+            .sortedByDescending { it.position }
+    }
+    val channels = remember(state.channels, guildId) {
+        (state.channels[guildId] ?: emptyList()).sortedWith(compareBy({ it.type != 4 }, { it.position }))
+    }
+
+    ToolScaffold("Roles y canales", guildName(state, guildId), vm::closeTool) {
+        Text(
+            "Renombrá, recoloreá, ordená y borrá roles; creá, renombrá y borrá canales. El bot necesita “Gestionar roles” / “Gestionar canales”, y los roles solo se pueden tocar si están por debajo del suyo.",
+            color = DcColors.TextMuted,
+            fontSize = 13.sp
+        )
+        val result = mg.result
+        if (result != null) {
+            Text(
+                result,
+                color = if (result.startsWith("✗")) DcColors.Danger else DcColors.TextPrimary,
+                fontSize = 14.sp
+            )
+        }
+        Section("Roles (${roles.size})") {
+            if (roles.isEmpty()) Text("No hay roles cargados.", color = DcColors.TextMuted, fontSize = 13.sp)
+            roles.forEachIndexed { index, role ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(DcColors.Panel)
+                        .padding(start = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        Modifier
+                            .size(12.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (role.color != 0) androidx.compose.ui.graphics.Color(0xFF000000.toInt() or role.color) else DcColors.Offline
+                            )
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        role.name,
+                        color = DcColors.TextPrimary,
+                        fontSize = 15.sp,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (!role.managed) {
+                        TextButton(onClick = { mg.moveRole(guildId, roles, index, true) }, enabled = !mg.busy && index > 0) { Text("⬆") }
+                        TextButton(onClick = { mg.moveRole(guildId, roles, index, false) }, enabled = !mg.busy && index < roles.lastIndex) { Text("⬇") }
+                        TextButton(onClick = { dialog = ManageDialog.EditRole(role) }, enabled = !mg.busy) { Text("✎") }
+                        TextButton(onClick = { dialog = ManageDialog.DeleteRole(role) }, enabled = !mg.busy) { Text("🗑") }
+                    } else {
+                        Text("de un bot", color = DcColors.TextMuted, fontSize = 11.sp, modifier = Modifier.padding(end = 12.dp))
+                    }
+                }
+            }
+        }
+        Section("Canales (${channels.size})") {
+            Button(onClick = { dialog = ManageDialog.NewChannel }, enabled = !mg.busy, modifier = Modifier.fillMaxWidth()) {
+                Text("+ Crear canal")
+            }
+            channels.forEach { ch ->
+                val icon = when {
+                    ch.isCategory -> "📁"
+                    ch.isVoice -> "🔊"
+                    else -> "#"
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(DcColors.Panel)
+                        .padding(start = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "$icon ${ch.name}",
+                        color = DcColors.TextPrimary,
+                        fontSize = 15.sp,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    TextButton(onClick = { dialog = ManageDialog.EditChannel(ch) }, enabled = !mg.busy) { Text("✎") }
+                    TextButton(onClick = { dialog = ManageDialog.DeleteChannel(ch) }, enabled = !mg.busy) { Text("🗑") }
+                }
+            }
+        }
+    }
+
+    when (val d = dialog) {
+        is ManageDialog.EditRole -> {
+            var name by remember(d.role.id) { mutableStateOf(d.role.name) }
+            var color by remember(d.role.id) { mutableStateOf(d.role.color) }
+            var picking by remember { mutableStateOf(false) }
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { dialog = null },
+                containerColor = DcColors.Surface,
+                title = { Text("Editar rol") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        FormField("Nombre", name, { name = it }, 100)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Color", color = DcColors.TextMuted, modifier = Modifier.weight(1f))
+                            Box(
+                                Modifier
+                                    .size(36.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        if (color != 0) androidx.compose.ui.graphics.Color(0xFF000000.toInt() or color) else DcColors.Offline
+                                    )
+                                    .clickable { picking = true }
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            dialog = null
+                            mg.editRole(guildId, d.role, name, color)
+                        },
+                        enabled = name.isNotBlank()
+                    ) { Text("Guardar") }
+                },
+                dismissButton = { TextButton(onClick = { dialog = null }) { Text("Cancelar") } }
+            )
+            if (picking) {
+                ColorPickerDialog(initial = color, onDismiss = { picking = false }, onPick = { color = it; picking = false })
+            }
+        }
+        is ManageDialog.DeleteRole -> ConfirmDialog(
+            title = "Borrar rol",
+            text = "Se borra “${d.role.name}” y se le saca a todos los que lo tengan.",
+            confirmLabel = "Borrar",
+            onConfirm = { dialog = null; mg.deleteRole(guildId, d.role) },
+            onDismiss = { dialog = null }
+        )
+        is ManageDialog.EditChannel -> {
+            var name by remember(d.channel.id) { mutableStateOf(d.channel.name) }
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { dialog = null },
+                containerColor = DcColors.Surface,
+                title = { Text("Renombrar canal") },
+                text = { FormField("Nombre", name, { name = it }, 100) },
+                confirmButton = {
+                    TextButton(
+                        onClick = { dialog = null; mg.renameChannel(guildId, d.channel, name) },
+                        enabled = name.isNotBlank()
+                    ) { Text("Guardar") }
+                },
+                dismissButton = { TextButton(onClick = { dialog = null }) { Text("Cancelar") } }
+            )
+        }
+        is ManageDialog.DeleteChannel -> ConfirmDialog(
+            title = "Borrar canal",
+            text = "Se borra “${d.channel.name}” con todos sus mensajes. No se puede deshacer.",
+            confirmLabel = "Borrar",
+            onConfirm = { dialog = null; mg.deleteChannel(guildId, d.channel) },
+            onDismiss = { dialog = null }
+        )
+        ManageDialog.NewChannel -> {
+            var name by remember { mutableStateOf("") }
+            var typeIdx by remember { mutableStateOf(0) }
+            val types = listOf("Texto" to 0, "Voz" to 2, "Categoría" to 4)
+            val cats = channels.filter { it.isCategory }
+            var catIdx by remember { mutableStateOf(-1) }
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { dialog = null },
+                containerColor = DcColors.Surface,
+                title = { Text("Crear canal") },
+                text = {
+                    Column(
+                        Modifier.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FormField("Nombre", name, { name = it }, 100)
+                        Text("Tipo", color = DcColors.TextMuted, fontSize = 13.sp)
+                        types.forEachIndexed { i, t ->
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { typeIdx = i },
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                androidx.compose.material3.RadioButton(selected = typeIdx == i, onClick = { typeIdx = i })
+                                Text(t.first, color = DcColors.TextPrimary)
+                            }
+                        }
+                        if (types[typeIdx].second != 4 && cats.isNotEmpty()) {
+                            Text("Categoría", color = DcColors.TextMuted, fontSize = 13.sp)
+                            (listOf<com.example.discordtoolkit.discord.DChannel?>(null) + cats).forEachIndexed { i, c ->
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable { catIdx = i - 1 },
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    androidx.compose.material3.RadioButton(selected = catIdx == i - 1, onClick = { catIdx = i - 1 })
+                                    Text(c?.name ?: "Ninguna", color = DcColors.TextPrimary)
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            dialog = null
+                            mg.createChannel(guildId, name, types[typeIdx].second, cats.getOrNull(catIdx)?.id)
+                        },
+                        enabled = name.isNotBlank()
+                    ) { Text("Crear") }
+                },
+                dismissButton = { TextButton(onClick = { dialog = null }) { Text("Cancelar") } }
+            )
+        }
+        null -> Unit
     }
 }

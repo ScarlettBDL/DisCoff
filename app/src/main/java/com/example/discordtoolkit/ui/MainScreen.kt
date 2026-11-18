@@ -58,7 +58,7 @@ import com.example.discordtoolkit.discord.DUser
 import com.example.discordtoolkit.discord.DmEntry
 import com.example.discordtoolkit.ui.theme.DcColors
 
-private val readyTools = setOf("roles", "embeds", "mod", "bulk", "clear", "audit", "modlog")
+private val readyTools = setOf("roles", "embeds", "mod", "manage", "bulk", "clear", "audit", "modlog")
 
 private class ToolInfo(val id: String, val title: String, val description: String)
 
@@ -66,6 +66,7 @@ private val tools = listOf(
     ToolInfo("roles", "Roles masivos", "Creá varios roles de una sola vez"),
     ToolInfo("embeds", "Embeds", "Armá y mandá embeds sin webhooks"),
     ToolInfo("mod", "Moderación", "Ban, softban, mute y más"),
+    ToolInfo("manage", "Roles y canales", "Editá, ordená y borrá roles; creá canales"),
     ToolInfo("bulk", "Acciones masivas", "Ban, kick o mute a una lista de IDs"),
     ToolInfo("clear", "Limpiar mensajes", "Borrá mensajes de un canal de una vez"),
     ToolInfo("audit", "Registro de auditoría", "Mirá qué pasó en el servidor"),

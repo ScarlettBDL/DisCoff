@@ -383,6 +383,54 @@ class DiscordApi(private val token: String) {
         }
     }
 
+    /** Edita un mensaje del bot que lleva un embed (reemplaza el texto y el embed). */
+    suspend fun editEmbed(channelId: String, messageId: String, content: String, embed: JSONObject) {
+        val payload = JSONObject().put("content", content).put("embeds", JSONArray().put(embed))
+        execute {
+            request("/channels/$channelId/messages/$messageId")
+                .patch(payload.toString().toRequestBody(jsonType))
+                .build()
+        }
+    }
+
+    suspend fun editRole(guildId: String, roleId: String, name: String, color: Int) {
+        val payload = JSONObject().put("name", name).put("color", color)
+        execute {
+            request("/guilds/$guildId/roles/$roleId").patch(payload.toString().toRequestBody(jsonType)).build()
+        }
+    }
+
+    suspend fun deleteRole(guildId: String, roleId: String) {
+        execute { request("/guilds/$guildId/roles/$roleId").delete().build() }
+    }
+
+    /** Cambia la posición de varios roles a la vez (lista de id -> posición). */
+    suspend fun moveRoles(guildId: String, positions: List<Pair<String, Int>>) {
+        val arr = JSONArray()
+        positions.forEach { arr.put(JSONObject().put("id", it.first).put("position", it.second)) }
+        execute {
+            request("/guilds/$guildId/roles").patch(arr.toString().toRequestBody(jsonType)).build()
+        }
+    }
+
+    /** Crea un canal: type 0 = texto, 2 = voz, 4 = categoría. */
+    suspend fun createChannel(guildId: String, name: String, type: Int, parentId: String?) {
+        val payload = JSONObject().put("name", name).put("type", type)
+        if (parentId != null && type != 4) payload.put("parent_id", parentId)
+        execute {
+            request("/guilds/$guildId/channels").post(payload.toString().toRequestBody(jsonType)).build()
+        }
+    }
+
+    suspend fun renameChannel(channelId: String, name: String) {
+        val payload = JSONObject().put("name", name)
+        execute { request("/channels/$channelId").patch(payload.toString().toRequestBody(jsonType)).build() }
+    }
+
+    suspend fun deleteChannel(channelId: String) {
+        execute { request("/channels/$channelId").delete().build() }
+    }
+
     companion object {
         private const val BASE = "https://discord.com/api/v10"
     }
