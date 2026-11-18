@@ -13,6 +13,7 @@ import com.example.discordtoolkit.discord.BanEntry
 import com.example.discordtoolkit.discord.DUser
 import com.example.discordtoolkit.discord.DiscordApi
 import com.example.discordtoolkit.discord.DmEntry
+import com.example.discordtoolkit.discord.GuildEmoji
 import com.example.discordtoolkit.discord.Gateway
 import com.example.discordtoolkit.discord.Message
 import com.example.discordtoolkit.discord.Parse
@@ -75,7 +76,13 @@ data class UiState(
     /** Ids de los roles de cada miembro, con clave "idServer:idUsuario". */
     val memberRoles: Map<String, List<String>> = emptyMap(),
     /** Herramienta extra abierta (acciones masivas, limpieza, auditoría, etc.). */
-    val tool: ToolRoute? = null
+    val tool: ToolRoute? = null,
+    /** Emojis personalizados de cada server. */
+    val emojis: Map<String, List<GuildEmoji>> = emptyMap(),
+    /** Hilos activos de cada server. */
+    val threads: Map<String, List<DChannel>> = emptyMap(),
+    /** Quién está en cada canal de voz (id del canal -> usuarios). */
+    val voice: Map<String, List<DUser>> = emptyMap()
 ) {
     /** Color del nombre de un usuario: el del rol más alto (por posición) que tenga color. 0 = sin color. */
     fun nameColor(guildId: String?, userId: String): Int {
@@ -771,6 +778,81 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---------- Fijados e hilos ----------
+
+    /** Mensajes fijados del canal abierto; null mientras se cargan. */
+    val pins = androidx.compose.runtime.mutableStateOf<List<Message>?>(null)
+
+    fun loadPins(channelId: String) {
+        val a = api ?: return
+        pins.value = null
+        viewModelScope.launch {
+            try {
+                pins.value = a.getPins(channelId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                pins.value = emptyList()
+                notify(friendly(e))
+            }
+        }
+    }
+
+    fun clearPins() {
+        pins.value = null
+    }
+
+    /** Fija un mensaje; [onDone] recibe "✓ …" o "✗ …". */
+    fun pinMessage(m: Message, onDone: (String) -> Unit) {
+        val a = api ?: return
+        viewModelScope.launch {
+            try {
+                a.pinMessage(m.channelId, m.id)
+                onDone("✓ Mensaje fijado")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                onDone("✗ " + friendly(e))
+            }
+        }
+    }
+
+    fun unpinMessage(m: Message, onDone: (String) -> Unit) {
+        val a = api ?: return
+        viewModelScope.launch {
+            try {
+                a.unpinMessage(m.channelId, m.id)
+                pins.value = pins.value?.filter { it.id != m.id }
+                onDone("✓ Mensaje desfijado")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                onDone("✗ " + friendly(e))
+            }
+        }
+    }
+
+    /** Crea un hilo desde un mensaje y lo abre. */
+    fun createThread(m: Message, name: String, onDone: (String) -> Unit) {
+        val a = api ?: return
+        val guildId = _state.value.openChannel?.guildId ?: return
+        viewModelScope.launch {
+            try {
+                val thread = a.createThread(m.channelId, m.id, name.trim()).copy(guildId = guildId)
+                _state.update { s ->
+                    val rest = (s.threads[guildId] ?: emptyList()).filter { it.id != thread.id }
+                    s.copy(threads = s.threads + (guildId to rest + thread))
+                }
+                onDone("✓ Hilo creado")
+                openChannel(ChannelRef(thread.id, thread.name, false, guildId))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                onDone("✗ " + friendly(e))
+            }
+        }
+    }
+
     // ---------- Chat ----------
 
     fun openChannel(ref: ChannelRef) {
@@ -1077,6 +1159,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- Eventos del gateway ----------
 
+    /** Reemplaza la gente en voz de los canales de un server con lo que trae GUILD_CREATE. */
+    private fun voiceWithGuild(
+        current: Map<String, List<DUser>>,
+        channels: List<DChannel>,
+        states: org.json.JSONArray?
+    ): Map<String, List<DUser>> {
+        val ids = channels.map { it.id }.toSet()
+        val result = current.filterKeys { it !in ids }.toMutableMap()
+        states.mapObjects { it }.forEach { st ->
+            val ch = st.str("channel_id") ?: return@forEach
+            val uid = st.str("user_id") ?: return@forEach
+            val user = st.optJSONObject("member")?.optJSONObject("user")?.let { Parse.user(it) }
+                ?: DUser(uid, uid, null, false)
+            result[ch] = (result[ch] ?: emptyList()) + user
+        }
+        return result
+    }
+
     private fun handleDispatch(type: String, d: JSONObject) {
         when (type) {
             "MESSAGE_CREATE" -> {
@@ -1131,13 +1231,55 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val g = Parse.guild(d)
                 val channels = d.optJSONArray("channels").mapObjects { Parse.channel(it, g.id) }
                 val roles = d.optJSONArray("roles").mapObjects { Parse.roleInfo(it) }.associateBy { it.id }
+                val emojis = d.optJSONArray("emojis").mapObjects { Parse.emoji(it) }
+                val threads = d.optJSONArray("threads").mapObjects { Parse.channel(it, g.id) }
+                val voiceStates = d.optJSONArray("voice_states")
                 _state.update { s ->
                     s.copy(
                         guilds = if (s.guilds.any { it.id == g.id }) s.guilds else s.guilds + g,
                         channels = s.channels + (g.id to channels),
                         guildRoles = s.guildRoles + (g.id to roles),
-                        selectedGuildId = s.selectedGuildId ?: g.id
+                        selectedGuildId = s.selectedGuildId ?: g.id,
+                        emojis = s.emojis + (g.id to emojis),
+                        threads = s.threads + (g.id to threads),
+                        voice = voiceWithGuild(s.voice, channels, voiceStates)
                     )
+                }
+            }
+            "GUILD_EMOJIS_UPDATE" -> {
+                val guildId = d.str("guild_id") ?: return
+                val list = d.optJSONArray("emojis").mapObjects { Parse.emoji(it) }
+                _state.update { s -> s.copy(emojis = s.emojis + (guildId to list)) }
+            }
+            "THREAD_CREATE", "THREAD_UPDATE" -> {
+                val guildId = d.str("guild_id") ?: return
+                val thread = Parse.channel(d, guildId)
+                val archived = d.optJSONObject("thread_metadata")?.optBoolean("archived", false) == true
+                _state.update { s ->
+                    val rest = (s.threads[guildId] ?: emptyList()).filter { it.id != thread.id }
+                    s.copy(threads = s.threads + (guildId to if (archived) rest else rest + thread))
+                }
+            }
+            "THREAD_DELETE" -> {
+                val guildId = d.str("guild_id") ?: return
+                val id = d.str("id") ?: return
+                _state.update { s ->
+                    s.copy(threads = s.threads + (guildId to (s.threads[guildId] ?: emptyList()).filter { it.id != id }))
+                }
+            }
+            "THREAD_LIST_SYNC" -> {
+                val guildId = d.str("guild_id") ?: return
+                val list = d.optJSONArray("threads").mapObjects { Parse.channel(it, guildId) }
+                _state.update { s -> s.copy(threads = s.threads + (guildId to list)) }
+            }
+            "VOICE_STATE_UPDATE" -> {
+                val userId = d.str("user_id") ?: return
+                val channelId = d.str("channel_id")
+                val user = d.optJSONObject("member")?.optJSONObject("user")?.let { Parse.user(it) }
+                    ?: DUser(userId, userId, null, false)
+                _state.update { s ->
+                    val cleaned = s.voice.mapValues { (_, list) -> list.filter { it.id != userId } }.filterValues { it.isNotEmpty() }
+                    s.copy(voice = if (channelId == null) cleaned else cleaned + (channelId to ((cleaned[channelId] ?: emptyList()) + user)))
                 }
             }
             "GUILD_ROLE_CREATE", "GUILD_ROLE_UPDATE" -> {

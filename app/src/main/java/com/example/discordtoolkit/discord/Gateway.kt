@@ -152,6 +152,6 @@ class Gateway(private val token: String, private val listener: Listener) {
         private const val URL = "wss://gateway.discord.gg/?v=10&encoding=json"
 
         // GUILDS | GUILD_MESSAGES | GUILD_MESSAGE_REACTIONS | DIRECT_MESSAGES | DIRECT_MESSAGE_REACTIONS | MESSAGE_CONTENT
-        private const val INTENTS = (1 shl 0) or (1 shl 9) or (1 shl 10) or (1 shl 12) or (1 shl 13) or (1 shl 15)
+        private const val INTENTS = (1 shl 0) or (1 shl 3) or (1 shl 7) or (1 shl 9) or (1 shl 10) or (1 shl 12) or (1 shl 13) or (1 shl 15)
     }
 }

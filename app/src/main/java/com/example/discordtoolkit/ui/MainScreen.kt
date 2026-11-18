@@ -129,6 +129,8 @@ fun MainScreen(state: UiState, vm: AppViewModel) {
                     else -> ChannelPanel(
                         guild = guild,
                         channels = state.channels[guild.id],
+                        threads = state.threads[guild.id] ?: emptyList(),
+                        voice = state.voice,
                         vm = vm,
                         onOpenTools = { vm.showTools(true) }
                     )
@@ -239,19 +241,34 @@ private sealed interface ListEntry {
     data class Item(val channel: DChannel) : ListEntry {
         override val key: String get() = channel.id
     }
+
+    data class VoiceUser(val channelId: String, val user: DUser) : ListEntry {
+        override val key: String get() = "v-$channelId-${user.id}"
+    }
 }
 
-private fun buildEntries(channels: List<DChannel>, collapsed: List<String>): List<ListEntry> {
+private fun buildEntries(
+    channels: List<DChannel>,
+    collapsed: List<String>,
+    threads: List<DChannel>,
+    voice: Map<String, List<DUser>>
+): List<ListEntry> {
     val sorter = compareBy<DChannel>({ it.isVoice }, { it.position })
     val categories = channels.filter { it.isCategory }.sortedBy { it.position }
     val categoryIds = categories.map { it.id }.toSet()
     val shown = channels.filter { it.isText || it.isVoice }
     val result = mutableListOf<ListEntry>()
 
+    fun addWithExtras(ch: DChannel) {
+        result.add(ListEntry.Item(ch))
+        threads.filter { it.parentId == ch.id }.forEach { result.add(ListEntry.Item(it)) }
+        if (ch.isVoice) voice[ch.id]?.forEach { result.add(ListEntry.VoiceUser(ch.id, it)) }
+    }
+
     shown
         .filter { it.parentId == null || it.parentId !in categoryIds }
         .sortedWith(sorter)
-        .forEach { result.add(ListEntry.Item(it)) }
+        .forEach { addWithExtras(it) }
 
     categories.forEach { cat ->
         val isCollapsed = cat.id in collapsed
@@ -260,7 +277,7 @@ private fun buildEntries(channels: List<DChannel>, collapsed: List<String>): Lis
             shown
                 .filter { it.parentId == cat.id }
                 .sortedWith(sorter)
-                .forEach { result.add(ListEntry.Item(it)) }
+                .forEach { addWithExtras(it) }
         }
     }
     return result
@@ -270,13 +287,15 @@ private fun buildEntries(channels: List<DChannel>, collapsed: List<String>): Lis
 private fun ChannelPanel(
     guild: DGuild,
     channels: List<DChannel>?,
+    threads: List<DChannel>,
+    voice: Map<String, List<DUser>>,
     vm: AppViewModel,
     onOpenTools: () -> Unit
 ) {
     val collapsed = remember(guild.id) { mutableStateListOf<String>() }
     val collapsedNow = collapsed.toList()
-    val entries = remember(channels, collapsedNow) {
-        if (channels == null) emptyList() else buildEntries(channels, collapsedNow)
+    val entries = remember(channels, collapsedNow, threads, voice) {
+        if (channels == null) emptyList() else buildEntries(channels, collapsedNow, threads, voice)
     }
 
     LazyColumn(
@@ -323,9 +342,21 @@ private fun ChannelPanel(
                     }
                 }
                 is ListEntry.Item -> ChannelRow(entry.channel) {
-                    if (entry.channel.isText) {
+                    if (entry.channel.isText || entry.channel.isThread) {
                         vm.openChannel(ChannelRef(entry.channel.id, entry.channel.name, false, guild.id))
                     }
+                }
+                is ListEntry.VoiceUser -> Row(
+                    Modifier.padding(start = 44.dp, top = 2.dp, bottom = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    AsyncImage(
+                        model = entry.user.avatarUrl,
+                        contentDescription = null,
+                        modifier = Modifier.size(22.dp).clip(CircleShape)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(entry.user.name, color = DcColors.TextMuted, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
@@ -448,7 +479,11 @@ private fun ChannelRow(channel: DChannel, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            if (channel.isText) "#" else "🔊",
+            when {
+                channel.isThread -> "  ↳"
+                channel.isText -> "#"
+                else -> "🔊"
+            },
             color = DcColors.TextMuted,
             fontSize = if (channel.isText) 22.sp else 16.sp,
             modifier = Modifier.width(32.dp)

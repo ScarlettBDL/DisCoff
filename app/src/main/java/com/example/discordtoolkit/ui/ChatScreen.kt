@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -34,6 +35,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalContext
+import android.widget.Toast
+import com.example.discordtoolkit.discord.DChannel
+import com.example.discordtoolkit.discord.DUser
+import com.example.discordtoolkit.discord.GuildEmoji
+import com.example.discordtoolkit.discord.RoleInfo
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -88,6 +98,19 @@ fun ChatScreen(state: UiState, vm: AppViewModel) {
     val uriHandler = LocalUriHandler.current
     val prefix = if (channel.isDm) "@" else "#"
     val reversed = remember(state.messages) { state.messages.asReversed() }
+    val context = LocalContext.current
+    var showPins by remember { mutableStateOf(false) }
+    var threadFor by remember { mutableStateOf<Message?>(null) }
+    val gid = channel.guildId
+    val emojis = if (gid != null) state.emojis[gid] ?: emptyList() else emptyList()
+    val candidates = remember(state.messages, state.guildRoles, state.channels, state.emojis, gid) {
+        Candidates(
+            users = state.messages.map { it.author }.distinctBy { it.id }.filter { it.id != state.me?.id },
+            roles = if (gid != null) (state.guildRoles[gid] ?: emptyMap()).values.filter { it.id != gid }.toList() else emptyList(),
+            channels = if (gid != null) (state.channels[gid] ?: emptyList()).filter { it.isText } else emptyList(),
+            emojis = emojis
+        )
+    }
 
     Column(
         Modifier
@@ -119,8 +142,21 @@ fun ChatScreen(state: UiState, vm: AppViewModel) {
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
             )
+            Box(
+                Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .clickable {
+                        vm.loadPins(channel.id)
+                        showPins = true
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Text("📌", fontSize = 20.sp)
+            }
         }
         Box(
             Modifier
@@ -168,7 +204,7 @@ fun ChatScreen(state: UiState, vm: AppViewModel) {
             }
         }
 
-        Composer(channel, state.replyingTo, state.editing, state.sending, vm)
+        Composer(channel, state.replyingTo, state.editing, state.sending, vm, candidates)
     }
 
     // Acciones de un mensaje (mantener apretado)
@@ -201,6 +237,55 @@ fun ChatScreen(state: UiState, vm: AppViewModel) {
                             }
                         }
                     }
+                    if (emojis.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("Del servidor", color = DcColors.TextMuted, fontSize = 13.sp)
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            emojis.forEach { e ->
+                                AsyncImage(
+                                    model = e.url,
+                                    contentDescription = e.name,
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clickable {
+                                            vm.toggleReaction(target, "${e.name}:${e.id}")
+                                            actionsFor = null
+                                        }
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text("Más emojis", color = DcColors.TextMuted, fontSize = 13.sp)
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 140.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        moreEmojis.chunked(7).forEach { rowItems ->
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                rowItems.forEach { emoji ->
+                                    Box(
+                                        Modifier
+                                            .size(40.dp)
+                                            .clip(CircleShape)
+                                            .clickable {
+                                                vm.toggleReaction(target, emoji)
+                                                actionsFor = null
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) { Text(emoji, fontSize = 22.sp) }
+                                }
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(8.dp))
                     ActionRow("Responder") {
                         vm.startReply(target)
@@ -215,6 +300,16 @@ fun ChatScreen(state: UiState, vm: AppViewModel) {
                     if (mine && target.embeds.isNotEmpty() && channel.guildId != null) {
                         ActionRow("Editar embed") {
                             vm.editEmbedMessage(target)
+                            actionsFor = null
+                        }
+                    }
+                    ActionRow("Fijar mensaje") {
+                        vm.pinMessage(target) { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
+                        actionsFor = null
+                    }
+                    if (!channel.isDm && channel.guildId != null) {
+                        ActionRow("Crear hilo") {
+                            threadFor = target
                             actionsFor = null
                         }
                     }
@@ -240,6 +335,70 @@ fun ChatScreen(state: UiState, vm: AppViewModel) {
         )
     }
 
+    // Mensajes fijados
+    if (showPins) {
+        val list = vm.pins.value
+        AlertDialog(
+            onDismissRequest = { showPins = false; vm.clearPins() },
+            containerColor = DcColors.Surface,
+            title = { Text("Mensajes fijados") },
+            text = {
+                Column(
+                    Modifier
+                        .heightIn(max = 460.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    when {
+                        list == null -> Text("Cargando…", color = DcColors.TextMuted)
+                        list.isEmpty() -> Text("No hay mensajes fijados.", color = DcColors.TextMuted)
+                        else -> list.forEach { m ->
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 6.dp)
+                            ) {
+                                Text(m.author.name + " · " + m.timeLabel, color = DcColors.TextMuted, fontSize = 12.sp)
+                                Text(
+                                    m.content.ifBlank { if (m.embeds.isNotEmpty()) "[embed]" else "[adjunto]" },
+                                    color = DcColors.TextPrimary,
+                                    fontSize = 14.sp,
+                                    maxLines = 6,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                TextButton(onClick = {
+                                    vm.unpinMessage(m) { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
+                                }) { Text("Desfijar") }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showPins = false; vm.clearPins() }) { Text("Cerrar") } }
+        )
+    }
+
+    // Crear hilo
+    val forThread = threadFor
+    if (forThread != null) {
+        var threadName by remember(forThread.id) { mutableStateOf(forThread.content.take(40).ifBlank { "Hilo" }) }
+        AlertDialog(
+            onDismissRequest = { threadFor = null },
+            containerColor = DcColors.Surface,
+            title = { Text("Crear hilo") },
+            text = { FormField("Nombre del hilo", threadName, { threadName = it }, 100) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        threadFor = null
+                        vm.createThread(forThread, threadName) { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
+                    },
+                    enabled = threadName.isNotBlank()
+                ) { Text("Crear") }
+            },
+            dismissButton = { TextButton(onClick = { threadFor = null }) { Text("Cancelar") } }
+        )
+    }
+
     // Visor de imágenes
     val viewing = viewer
     if (viewing != null) {
@@ -260,8 +419,10 @@ private fun Composer(
     replyingTo: Message?,
     editing: Message?,
     uploading: Boolean,
-    vm: AppViewModel
+    vm: AppViewModel,
+    cand: Candidates
 ) {
+    var showEmojis by remember { mutableStateOf(false) }
     var draft by rememberSaveable(channel.id) { mutableStateOf("") }
     val prefix = if (channel.isDm) "@" else "#"
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -303,6 +464,39 @@ private fun Composer(
                 )
             }
         }
+        if (showEmojis) {
+            AlertDialog(
+                onDismissRequest = { showEmojis = false },
+                containerColor = DcColors.Surface,
+                title = { Text("Emojis del servidor") },
+                text = {
+                    Column(
+                        Modifier
+                            .heightIn(max = 380.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        cand.emojis.chunked(6).forEach { rowItems ->
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                rowItems.forEach { e ->
+                                    AsyncImage(
+                                        model = e.url,
+                                        contentDescription = e.name,
+                                        modifier = Modifier
+                                            .size(44.dp)
+                                            .padding(4.dp)
+                                            .clickable {
+                                                draft = draft + e.mention
+                                                showEmojis = false
+                                            }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { showEmojis = false }) { Text("Cerrar") } }
+            )
+        }
         if (uploading) {
             Text(
                 "Subiendo archivo…",
@@ -310,6 +504,39 @@ private fun Composer(
                 fontSize = 13.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
             )
+        }
+        val token = remember(draft) { Regex("(?:^|\\s)([@#:])([\\p{L}\\p{N}_-]*)$").find(draft) }
+        val options = remember(token, cand) { if (token != null) suggestionsFor(token.groupValues[1], token.groupValues[2], cand) else emptyList() }
+        if (token != null && options.isNotEmpty()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .background(DcColors.Surface)
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                options.forEach { opt ->
+                    Row(
+                        Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(DcColors.SurfaceHigh)
+                            .clickable {
+                                val start = token.groups[1]!!.range.first
+                                draft = draft.substring(0, start) + opt.insert + " "
+                            }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (opt.imageUrl != null) {
+                            AsyncImage(model = opt.imageUrl, contentDescription = null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(6.dp))
+                        }
+                        Text(opt.label, color = DcColors.TextPrimary, fontSize = 14.sp)
+                    }
+                }
+            }
         }
         Row(
             Modifier
@@ -319,6 +546,9 @@ private fun Composer(
         ) {
             IconButton(onClick = { picker.launch("image/*") }) {
                 Icon(Icons.Filled.Add, contentDescription = "Adjuntar imagen", tint = DcColors.TextPrimary)
+            }
+            if (cand.emojis.isNotEmpty()) {
+                TextButton(onClick = { showEmojis = true }) { Text("😀", fontSize = 22.sp) }
             }
             TextField(
                 value = draft,
@@ -594,3 +824,39 @@ private fun ReactionChip(r: Reaction, onClick: () -> Unit) {
         Text("${r.count}", color = DcColors.TextPrimary, fontSize = 13.sp)
     }
 }
+
+
+/** Lo que se puede sugerir al escribir @, # o : en el mensaje. */
+class Candidates(
+    val users: List<DUser>,
+    val roles: List<RoleInfo>,
+    val channels: List<DChannel>,
+    val emojis: List<GuildEmoji>
+)
+
+private class Suggestion(val label: String, val insert: String, val imageUrl: String? = null)
+
+private fun suggestionsFor(kind: String, query: String, cand: Candidates): List<Suggestion> {
+    val q = query.lowercase()
+    fun ok(name: String) = q.isEmpty() || name.lowercase().contains(q)
+    return when (kind) {
+        "@" -> {
+            val special = listOf("everyone", "here").filter { ok(it) }.map { Suggestion("@$it", "@$it") }
+            val users = cand.users.filter { ok(it.name) }.map { Suggestion("@" + it.name, "<@${it.id}>", it.avatarUrl) }
+            val roles = cand.roles.filter { ok(it.name) }.map { Suggestion("@" + it.name, "<@&${it.id}>") }
+            (users + roles + special).take(10)
+        }
+        "#" -> cand.channels.filter { ok(it.name) }.take(10).map { Suggestion("#" + it.name, "<#${it.id}>") }
+        // Los emojis solo se sugieren a partir de 2 letras, para no molestar al escribir "hola :)".
+        else -> if (q.length < 2) emptyList() else
+            cand.emojis.filter { ok(it.name) }.take(10).map { Suggestion(":" + it.name + ":", it.mention, it.url) }
+    }
+}
+
+private val moreEmojis = listOf(
+    "😀", "😃", "😄", "😁", "😆", "😅", "🤣", "😊", "😇", "🙂", "😉", "😍", "🥰", "😘", "😋",
+    "😎", "🤩", "🥳", "😏", "😒", "😞", "😔", "😟", "😕", "🙁", "😣", "😖", "😫", "😩", "🥺",
+    "😭", "😤", "😠", "😡", "🤬", "🤯", "😳", "🥵", "🥶", "😱", "😨", "😰", "😥", "😓", "🤔",
+    "🤭", "🤫", "🙄", "😬", "😴", "🤢", "🤮", "🤧", "😷", "🤒", "👏", "🙌", "🙏", "💪", "👌",
+    "✌️", "🤞", "🤝", "👋", "💯", "💔", "💖", "💜", "🖤", "⭐", "✨", "💥", "🎮", "🍕", "🍺"
+)

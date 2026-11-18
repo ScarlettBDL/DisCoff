@@ -431,6 +431,30 @@ class DiscordApi(private val token: String) {
         execute { request("/channels/$channelId").delete().build() }
     }
 
+    suspend fun getPins(channelId: String): List<Message> {
+        val body = execute { request("/channels/$channelId/pins").get().build() }
+        return withContext(Dispatchers.Default) { JSONArray(body).mapObjects { Parse.message(it) } }
+    }
+
+    suspend fun pinMessage(channelId: String, messageId: String) {
+        execute { request("/channels/$channelId/pins/$messageId").put("".toRequestBody()).build() }
+    }
+
+    suspend fun unpinMessage(channelId: String, messageId: String) {
+        execute { request("/channels/$channelId/pins/$messageId").delete().build() }
+    }
+
+    /** Crea un hilo a partir de un mensaje. */
+    suspend fun createThread(channelId: String, messageId: String, name: String): DChannel {
+        val payload = JSONObject().put("name", name).put("auto_archive_duration", 1440)
+        val body = execute {
+            request("/channels/$channelId/messages/$messageId/threads")
+                .post(payload.toString().toRequestBody(jsonType))
+                .build()
+        }
+        return Parse.channel(JSONObject(body), null)
+    }
+
     companion object {
         private const val BASE = "https://discord.com/api/v10"
     }

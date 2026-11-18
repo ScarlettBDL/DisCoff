@@ -40,6 +40,14 @@ data class DChannel(
     val isText: Boolean get() = type == 0 || type == 5
     val isVoice: Boolean get() = type == 2 || type == 13
     val isCategory: Boolean get() = type == 4
+    val isThread: Boolean get() = type == 10 || type == 11 || type == 12
+}
+
+/** Un emoji personalizado de un servidor. */
+data class GuildEmoji(val id: String, val name: String, val animated: Boolean) {
+    /** Texto que se escribe en un mensaje para usar el emoji. */
+    val mention: String get() = if (animated) "<a:$name:$id>" else "<:$name:$id>"
+    val url: String get() = "https://cdn.discordapp.com/emojis/$id.${if (animated) "gif" else "png"}?size=64"
 }
 
 data class Attachment(
@@ -299,6 +307,20 @@ object Parse {
         return channelMention.replace(text, "#canal")
     }
 
+    fun emoji(o: JSONObject): GuildEmoji =
+        GuildEmoji(o.optString("id"), o.str("name") ?: "emoji", o.optBoolean("animated", false))
+
+    /** Los stickers se muestran como imágenes (los animados con Lottie no se pueden mostrar). */
+    private fun stickers(o: JSONObject): List<Attachment> =
+        o.optJSONArray("sticker_items").mapObjects {
+            val id = it.optString("id")
+            when (it.optInt("format_type", 1)) {
+                3 -> null
+                4 -> Attachment("s$id", "sticker.gif", "https://media.discordapp.net/stickers/$id.gif", "image/gif", 160, 160)
+                else -> Attachment("s$id", "sticker.png", "https://media.discordapp.net/stickers/$id.png", "image/png", 160, 160)
+            }
+        }.filterNotNull()
+
     fun message(o: JSONObject): Message {
         val raw = o.optString("content", "")
         val ref = o.optJSONObject("referenced_message")
@@ -322,7 +344,7 @@ object Parse {
             epochMs = epochMs,
             timeLabel = timeLabel(epochMs),
             edited = !o.isNull("edited_timestamp"),
-            attachments = o.optJSONArray("attachments").mapObjects { attachment(it) },
+            attachments = o.optJSONArray("attachments").mapObjects { attachment(it) } + stickers(o),
             reactions = o.optJSONArray("reactions").mapObjects { reaction(it) },
             embeds = o.optJSONArray("embeds").mapObjects { embed(it) },
             reply = reply,
