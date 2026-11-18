@@ -45,7 +45,8 @@ class Storage(context: Context) {
             val out = ArrayList<DmEntry>()
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
-                out.add(DmEntry(o.optString("c"), o.optString("u"), o.optString("n")))
+                val avatar = if (o.isNull("a")) null else o.optString("a")
+                out.add(DmEntry(o.optString("c"), o.optString("u"), o.optString("n"), avatar))
             }
             out
         } catch (e: Exception) {
@@ -55,7 +56,11 @@ class Storage(context: Context) {
 
     fun saveDms(botId: String, list: List<DmEntry>) {
         val arr = JSONArray()
-        list.forEach { arr.put(JSONObject().put("c", it.channelId).put("u", it.userId).put("n", it.name)) }
+        list.forEach {
+            val o = JSONObject().put("c", it.channelId).put("u", it.userId).put("n", it.name)
+            if (it.avatar != null) o.put("a", it.avatar)
+            arr.put(o)
+        }
         prefs?.edit()?.putString("dms_$botId", arr.toString())?.apply()
     }
 }

@@ -266,7 +266,10 @@ private fun ChannelPanel(
     onOpenTools: () -> Unit
 ) {
     val collapsed = remember(guild.id) { mutableStateListOf<String>() }
-    val entries = if (channels == null) emptyList() else buildEntries(channels, collapsed)
+    val collapsedNow = collapsed.toList()
+    val entries = remember(channels, collapsedNow) {
+        if (channels == null) emptyList() else buildEntries(channels, collapsedNow)
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -568,7 +571,13 @@ private fun DmPanel(dms: List<DmEntry>, vm: AppViewModel) {
                     .padding(vertical = 10.dp, horizontal = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Avatar(dm.name.firstOrNull()?.uppercase() ?: "?", 44.dp, DcColors.SurfaceHigh)
+                AsyncImage(
+                    model = dm.avatarUrl,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                )
                 Spacer(Modifier.width(12.dp))
                 Text(dm.name, color = DcColors.TextPrimary, fontSize = 17.sp)
             }

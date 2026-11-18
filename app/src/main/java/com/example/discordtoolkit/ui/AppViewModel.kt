@@ -14,8 +14,11 @@ import com.example.discordtoolkit.discord.DmEntry
 import com.example.discordtoolkit.discord.Gateway
 import com.example.discordtoolkit.discord.Message
 import com.example.discordtoolkit.discord.Parse
+import com.example.discordtoolkit.discord.Reaction
+import com.example.discordtoolkit.discord.ReplySnippet
 import com.example.discordtoolkit.discord.mapObjects
 import com.example.discordtoolkit.discord.str
+import com.example.discordtoolkit.discord.timeLabel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -120,6 +123,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
                 launchSafe { loadGuilds(newApi) }
+                launchSafe { refreshDmProfiles(newApi) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -242,21 +246,65 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val content = text.trim()
         if (content.isEmpty()) return
         val editing = s.editing
-        val replyId = s.replyingTo?.id
-        _state.update { it.copy(replyingTo = null, editing = null, sending = true) }
-        launchSafe {
-            try {
+        val reply = s.replyingTo
+        _state.update { it.copy(replyingTo = null, editing = null) }
+
+        if (editing != null) {
+            launchSafe {
                 val a = api ?: return@launchSafe
-                val result = if (editing != null) {
-                    a.editMessage(channel.id, editing.id, content)
-                } else {
-                    a.sendMessage(channel.id, content, replyId)
-                }
-                upsert(result)
-            } finally {
-                _state.update { it.copy(sending = false) }
+                upsert(a.editMessage(channel.id, editing.id, content))
+            }
+            return
+        }
+
+        // Se muestra el mensaje al instante (pendiente) y se reemplaza cuando Discord confirma.
+        val nonce = newNonce()
+        val me = s.me
+        if (me != null) upsert(pendingMessage(nonce, channel.id, me, content, reply))
+        launchSafe {
+            val a = api ?: return@launchSafe
+            try {
+                val result = a.sendMessage(channel.id, content, reply?.id, nonce)
+                upsert(result, replacesId = nonce)
+            } catch (e: Exception) {
+                removeMessages(channel.id, listOf(nonce))
+                throw e
             }
         }
+    }
+
+    private var nonceCounter = 0
+
+    private fun newNonce(): String {
+        nonceCounter++
+        return "d${System.currentTimeMillis()}$nonceCounter"
+    }
+
+    private fun pendingMessage(
+        nonce: String,
+        channelId: String,
+        me: DUser,
+        content: String,
+        reply: Message?
+    ): Message {
+        val now = System.currentTimeMillis()
+        return Message(
+            id = nonce,
+            channelId = channelId,
+            guildId = null,
+            author = me,
+            rawContent = content,
+            content = content,
+            epochMs = now,
+            timeLabel = timeLabel(now),
+            edited = false,
+            attachments = emptyList(),
+            reactions = emptyList(),
+            embeds = emptyList(),
+            reply = if (reply != null) ReplySnippet(reply.author.name, reply.content.take(80)) else null,
+            nonce = nonce,
+            pending = true
+        )
     }
 
     fun sendImage(uri: Uri, caption: String) {
@@ -297,14 +345,70 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleReaction(m: Message, emoji: String) {
         val mine = m.reactions.any { it.apiEmoji == emoji && it.me }
+        // Se refleja al instante y después se confirma con Discord.
+        applyReaction(m.channelId, m.id, emoji, byMe = true, add = !mine)
         launchSafe {
             val a = api ?: return@launchSafe
-            if (mine) {
-                a.removeReaction(m.channelId, m.id, emoji)
-            } else {
-                a.addReaction(m.channelId, m.id, emoji)
+            try {
+                if (mine) {
+                    a.removeReaction(m.channelId, m.id, emoji)
+                } else {
+                    a.addReaction(m.channelId, m.id, emoji)
+                }
+            } catch (e: Exception) {
+                try {
+                    refresh(m.channelId, m.id)
+                } catch (ignored: Exception) {
+                    // si tampoco se puede refrescar, queda el error original
+                }
+                throw e
             }
-            refresh(m.channelId, m.id)
+        }
+    }
+
+    private fun splitEmoji(key: String): Pair<String, String?> {
+        val index = key.lastIndexOf(':')
+        return if (index > 0) Pair(key.substring(0, index), key.substring(index + 1)) else Pair(key, null)
+    }
+
+    /**
+     * Cambia el contador de una reacción en el mensaje abierto. Para las reacciones del propio bot
+     * es idempotente: aplicar dos veces el mismo cambio (local + evento del gateway) no suma doble.
+     */
+    private fun applyReaction(channelId: String, messageId: String, key: String, byMe: Boolean, add: Boolean) {
+        _state.update { s ->
+            if (s.openChannel?.id != channelId) return@update s
+            val index = s.messages.indexOfFirst { it.id == messageId }
+            if (index < 0) return@update s
+            val msg = s.messages[index]
+            val reactions = msg.reactions.toMutableList()
+            val at = reactions.indexOfFirst { it.apiEmoji == key }
+            if (add) {
+                if (at >= 0) {
+                    val r = reactions[at]
+                    if (!byMe) {
+                        reactions[at] = r.copy(count = r.count + 1)
+                    } else if (!r.me) {
+                        reactions[at] = r.copy(count = r.count + 1, me = true)
+                    }
+                } else {
+                    val (name, id) = splitEmoji(key)
+                    reactions.add(Reaction(name, id, 1, byMe))
+                }
+            } else if (at >= 0) {
+                val r = reactions[at]
+                val applies = !byMe || r.me
+                if (applies) {
+                    if (r.count <= 1) {
+                        reactions.removeAt(at)
+                    } else {
+                        reactions[at] = r.copy(count = r.count - 1, me = if (byMe) false else r.me)
+                    }
+                }
+            }
+            val list = s.messages.toMutableList()
+            list[index] = msg.copy(reactions = reactions)
+            s.copy(messages = list)
         }
     }
 
@@ -336,17 +440,43 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         upsert(a.getMessage(channelId, messageId))
     }
 
-    private fun upsert(m: Message) {
+    /** Agrega o reemplaza un mensaje. Si trae nonce, también saca el mensaje pendiente que lo originó. */
+    private fun upsert(m: Message, replacesId: String? = null) {
         _state.update { s ->
             if (s.openChannel?.id != m.channelId) return@update s
-            val index = s.messages.indexOfFirst { it.id == m.id }
-            val list = if (index >= 0) {
-                s.messages.toMutableList().also { it[index] = m }
+            val pendingId = replacesId ?: m.nonce
+            val base = if (pendingId != null && !m.pending) {
+                s.messages.filter { it.id != pendingId }
             } else {
-                (s.messages + m).takeLast(300)
+                s.messages
+            }
+            val index = base.indexOfFirst { it.id == m.id }
+            val list = if (index >= 0) {
+                base.toMutableList().also { it[index] = m }
+            } else {
+                (base + m).takeLast(300)
             }
             s.copy(messages = list)
         }
+    }
+
+    private suspend fun refreshDmProfiles(api: DiscordApi) {
+        val me = _state.value.me ?: return
+        for (dm in _state.value.dms) {
+            val user = try {
+                api.getUser(dm.userId)
+            } catch (e: Exception) {
+                continue
+            }
+            _state.update { s ->
+                s.copy(
+                    dms = s.dms.map {
+                        if (it.channelId == dm.channelId) it.copy(name = user.name, avatar = user.avatar) else it
+                    }
+                )
+            }
+        }
+        storage.saveDms(me.id, _state.value.dms)
     }
 
     private fun removeMessages(channelId: String, ids: List<String>) {
@@ -372,12 +502,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val me = _state.value.me
                 val isDm = d.str("guild_id") == null
                 if (isDm && me != null && m.author.id != me.id) {
-                    addDm(DmEntry(m.channelId, m.author.id, m.author.name))
+                    addDm(DmEntry(m.channelId, m.author.id, m.author.name, m.author.avatar))
                 }
                 upsert(m)
             }
-            "MESSAGE_UPDATE", "MESSAGE_REACTION_ADD", "MESSAGE_REACTION_REMOVE",
-            "MESSAGE_REACTION_REMOVE_ALL", "MESSAGE_REACTION_REMOVE_EMOJI" -> {
+            "MESSAGE_REACTION_ADD", "MESSAGE_REACTION_REMOVE" -> {
+                val channelId = d.str("channel_id") ?: return
+                val messageId = d.str("message_id") ?: return
+                val emoji = d.optJSONObject("emoji") ?: return
+                val name = emoji.str("name") ?: return
+                val emojiId = emoji.str("id")
+                val key = if (emojiId != null) "$name:$emojiId" else name
+                val byMe = d.str("user_id") == _state.value.me?.id
+                applyReaction(channelId, messageId, key, byMe, add = type == "MESSAGE_REACTION_ADD")
+            }
+            "MESSAGE_UPDATE", "MESSAGE_REACTION_REMOVE_ALL", "MESSAGE_REACTION_REMOVE_EMOJI" -> {
                 val channelId = d.str("channel_id") ?: return
                 val messageId = d.str("id") ?: d.str("message_id") ?: return
                 if (_state.value.openChannel?.id == channelId) {

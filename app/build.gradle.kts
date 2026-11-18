@@ -16,8 +16,26 @@ android {
         versionName = "0.1.0"
     }
 
+    // Misma clave en todos los builds: así cada APK nuevo se instala encima del anterior sin desinstalar.
+    signingConfigs {
+        create("shared") {
+            storeFile = file("shared.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("shared")
+        }
         release {
+            // Release sin debuggable es bastante más rápido que debug, sobre todo con Compose.
+            signingConfig = signingConfigs.getByName("shared")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

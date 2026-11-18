@@ -75,22 +75,32 @@ class DiscordApi(private val token: String) {
 
     suspend fun getChannels(guildId: String): List<DChannel> {
         val body = execute { request("/guilds/$guildId/channels").get().build() }
-        return JSONArray(body).mapObjects { Parse.channel(it, guildId) }
+        return withContext(Dispatchers.Default) {
+            JSONArray(body).mapObjects { Parse.channel(it, guildId) }
+        }
+    }
+
+    suspend fun getUser(userId: String): DUser {
+        val body = execute { request("/users/$userId").get().build() }
+        return Parse.user(JSONObject(body))
     }
 
     /** Devuelve los mensajes del más viejo al más nuevo. */
     suspend fun getMessages(channelId: String, limit: Int = 50): List<Message> {
         val body = execute { request("/channels/$channelId/messages?limit=$limit").get().build() }
-        val arr = JSONArray(body)
-        val list = ArrayList<Message>()
-        for (i in 0 until arr.length()) {
-            try {
-                list.add(Parse.message(arr.getJSONObject(i)))
-            } catch (e: Exception) {
-                // mensaje raro que no se puede leer: se saltea
+        // El parseo de 50 mensajes no debe correr en el hilo principal.
+        return withContext(Dispatchers.Default) {
+            val arr = JSONArray(body)
+            val list = ArrayList<Message>()
+            for (i in 0 until arr.length()) {
+                try {
+                    list.add(Parse.message(arr.getJSONObject(i)))
+                } catch (e: Exception) {
+                    // mensaje raro que no se puede leer: se saltea
+                }
             }
+            list.reversed()
         }
-        return list.reversed()
     }
 
     suspend fun getMessage(channelId: String, messageId: String): Message {
@@ -101,9 +111,10 @@ class DiscordApi(private val token: String) {
     private fun replyRef(messageId: String): JSONObject =
         JSONObject().put("message_id", messageId).put("fail_if_not_exists", false)
 
-    suspend fun sendMessage(channelId: String, content: String, replyTo: String?): Message {
+    suspend fun sendMessage(channelId: String, content: String, replyTo: String?, nonce: String? = null): Message {
         val payload = JSONObject().put("content", content)
         if (replyTo != null) payload.put("message_reference", replyRef(replyTo))
+        if (nonce != null) payload.put("nonce", nonce)
         val body = execute {
             request("/channels/$channelId/messages")
                 .post(payload.toString().toRequestBody(jsonType))
@@ -171,8 +182,13 @@ class DiscordApi(private val token: String) {
         }
         val o = JSONObject(body)
         val recipient = o.optJSONArray("recipients")?.optJSONObject(0)
-        val name = if (recipient != null) Parse.user(recipient).name else userId
-        return DmEntry(channelId = o.getString("id"), userId = userId, name = name)
+        val user = if (recipient != null) Parse.user(recipient) else null
+        return DmEntry(
+            channelId = o.getString("id"),
+            userId = userId,
+            name = user?.name ?: userId,
+            avatar = user?.avatar
+        )
     }
 
     companion object {

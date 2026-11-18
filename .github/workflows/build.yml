@@ -17,9 +17,14 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.7'
-      - name: Build debug APK
-        run: gradle assembleDebug
-      - name: Upload APK
+      - name: Build APKs
+        run: gradle assembleRelease assembleDebug
+      - name: Upload release APK (rápido, el que conviene instalar)
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: app/build/outputs/apk/release/app-release.apk
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: app-debug

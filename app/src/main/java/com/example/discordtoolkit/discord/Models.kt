@@ -3,6 +3,7 @@ package com.example.discordtoolkit.discord
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
@@ -63,7 +64,14 @@ data class Reaction(val emojiName: String, val emojiId: String?, val count: Int,
     val customUrl: String? get() = if (emojiId != null) "https://cdn.discordapp.com/emojis/$emojiId.png?size=32" else null
 }
 
-data class Embed(val title: String?, val description: String?, val imageUrl: String?, val color: Int?)
+data class Embed(
+    val title: String?,
+    val description: String?,
+    val imageUrl: String?,
+    val imageWidth: Int?,
+    val imageHeight: Int?,
+    val color: Int?
+)
 
 data class ReplySnippet(val authorName: String, val content: String)
 
@@ -74,18 +82,32 @@ data class Message(
     val author: DUser,
     val rawContent: String,
     val content: String,
-    val timestamp: String,
+    val epochMs: Long,
+    val timeLabel: String,
     val edited: Boolean,
     val attachments: List<Attachment>,
     val reactions: List<Reaction>,
     val embeds: List<Embed>,
-    val reply: ReplySnippet?
+    val reply: ReplySnippet?,
+    /** Identificador que mandamos al enviar; Discord lo devuelve y sirve para reemplazar el mensaje pendiente. */
+    val nonce: String? = null,
+    /** true mientras el mensaje se muestra localmente y todavía no confirmó Discord. */
+    val pending: Boolean = false
 )
 
 /** Un DM conocido por el bot. Discord no deja listar los DMs de un bot, por eso se guardan localmente. */
-data class DmEntry(val channelId: String, val userId: String, val name: String)
+data class DmEntry(
+    val channelId: String,
+    val userId: String,
+    val name: String,
+    val avatar: String? = null
+) {
+    val avatarUrl: String get() = DUser(userId, name, avatar, false).avatarUrl
+}
 
 fun JSONObject.str(key: String): String? = if (isNull(key)) null else optString(key)
+
+fun JSONObject.intOrNull(key: String): Int? = if (isNull(key)) null else optInt(key)
 
 fun <T> JSONArray?.mapObjects(transform: (JSONObject) -> T): List<T> {
     val arr = this ?: return emptyList()
@@ -97,15 +119,30 @@ fun <T> JSONArray?.mapObjects(transform: (JSONObject) -> T): List<T> {
     return out
 }
 
-fun formatTime(iso: String): String {
-    try {
-        val parser = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
-        parser.timeZone = TimeZone.getTimeZone("UTC")
-        val date = parser.parse(iso.take(19)) ?: return ""
-        return SimpleDateFormat("dd/MM HH:mm", Locale.getDefault()).format(date)
-    } catch (e: Exception) {
-        return ""
+// SimpleDateFormat es caro de crear y no es thread-safe: uno por hilo, y las horas se calculan al parsear.
+private val isoFormat = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue(): SimpleDateFormat {
+        val f = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+        f.timeZone = TimeZone.getTimeZone("UTC")
+        return f
     }
+}
+
+private val labelFormat = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue(): SimpleDateFormat = SimpleDateFormat("dd/MM HH:mm", Locale.getDefault())
+}
+
+fun parseIso(iso: String): Long {
+    try {
+        return isoFormat.get()!!.parse(iso.take(19))?.time ?: 0L
+    } catch (e: Exception) {
+        return 0L
+    }
+}
+
+fun timeLabel(epochMs: Long): String {
+    if (epochMs == 0L) return ""
+    return labelFormat.get()!!.format(Date(epochMs))
 }
 
 object Parse {
@@ -149,12 +186,17 @@ object Parse {
         )
     }
 
-    private fun embed(o: JSONObject): Embed = Embed(
-        title = o.str("title"),
-        description = o.str("description"),
-        imageUrl = o.optJSONObject("image")?.str("url") ?: o.optJSONObject("thumbnail")?.str("url"),
-        color = if (o.isNull("color")) null else o.optInt("color")
-    )
+    private fun embed(o: JSONObject): Embed {
+        val image = o.optJSONObject("image") ?: o.optJSONObject("thumbnail")
+        return Embed(
+            title = o.str("title"),
+            description = o.str("description"),
+            imageUrl = image?.str("url"),
+            imageWidth = image?.intOrNull("width"),
+            imageHeight = image?.intOrNull("height"),
+            color = o.intOrNull("color")
+        )
+    }
 
     private fun cleanContent(raw: String, mentions: JSONArray?): String {
         var text = raw
@@ -177,6 +219,7 @@ object Parse {
         } else {
             null
         }
+        val epochMs = parseIso(o.optString("timestamp", ""))
         return Message(
             id = o.getString("id"),
             channelId = o.getString("channel_id"),
@@ -184,12 +227,14 @@ object Parse {
             author = user(o.getJSONObject("author")),
             rawContent = raw,
             content = cleanContent(raw, o.optJSONArray("mentions")),
-            timestamp = o.optString("timestamp", ""),
+            epochMs = epochMs,
+            timeLabel = timeLabel(epochMs),
             edited = !o.isNull("edited_timestamp"),
             attachments = o.optJSONArray("attachments").mapObjects { attachment(it) },
             reactions = o.optJSONArray("reactions").mapObjects { reaction(it) },
             embeds = o.optJSONArray("embeds").mapObjects { embed(it) },
-            reply = reply
+            reply = reply,
+            nonce = o.str("nonce")
         )
     }
 }
