@@ -31,7 +31,13 @@ import androidx.compose.ui.unit.sp
 import com.example.discordtoolkit.ui.theme.DcColors
 
 @Composable
-fun LoginScreen(error: String?, connecting: Boolean, onLogin: (String) -> Unit) {
+fun LoginScreen(
+    error: String?,
+    connecting: Boolean,
+    onLogin: (String) -> Unit,
+    accounts: List<com.example.discordtoolkit.data.Account> = emptyList(),
+    onPick: (com.example.discordtoolkit.data.Account) -> Unit = {}
+) {
     var token by rememberSaveable { mutableStateOf("") }
 
     Column(
@@ -74,6 +80,15 @@ fun LoginScreen(error: String?, connecting: Boolean, onLogin: (String) -> Unit) 
                 )
             } else {
                 Text("Conectar")
+            }
+        }
+        if (accounts.isNotEmpty()) {
+            Spacer(Modifier.height(24.dp))
+            Text("Bots guardados", color = DcColors.TextMuted, fontSize = 14.sp)
+            accounts.forEach { acc ->
+                androidx.compose.material3.TextButton(onClick = { onPick(acc) }, enabled = !connecting) {
+                    Text(acc.name)
+                }
             }
         }
         Spacer(Modifier.height(24.dp))

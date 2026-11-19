@@ -36,6 +36,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Button
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.platform.LocalContext
@@ -76,6 +77,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.airbnb.lottie.compose.LottieAnimation
+import com.airbnb.lottie.compose.LottieCompositionSpec
+import com.airbnb.lottie.compose.LottieConstants
+import com.airbnb.lottie.compose.rememberLottieComposition
 import com.example.discordtoolkit.discord.Attachment
 import com.example.discordtoolkit.discord.Embed
 import com.example.discordtoolkit.discord.Message
@@ -100,6 +105,7 @@ fun ChatScreen(state: UiState, vm: AppViewModel) {
     val reversed = remember(state.messages) { state.messages.asReversed() }
     val context = LocalContext.current
     var showPins by remember { mutableStateOf(false) }
+    var showSearch by remember { mutableStateOf(false) }
     var threadFor by remember { mutableStateOf<Message?>(null) }
     val gid = channel.guildId
     val emojis = if (gid != null) state.emojis[gid] ?: emptyList() else emptyList()
@@ -145,6 +151,15 @@ fun ChatScreen(state: UiState, vm: AppViewModel) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
+            Box(
+                Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .clickable { showSearch = true },
+                contentAlignment = Alignment.Center
+            ) {
+                Text("🔍", fontSize = 20.sp)
+            }
             Box(
                 Modifier
                     .size(44.dp)
@@ -332,6 +347,54 @@ fun ChatScreen(state: UiState, vm: AppViewModel) {
                     }
                 }
             }
+        )
+    }
+
+    // Buscar mensajes
+    if (showSearch) {
+        val results = vm.searchResults.value
+        AlertDialog(
+            onDismissRequest = { showSearch = false; vm.clearSearch() },
+            containerColor = DcColors.Surface,
+            title = { Text("Buscar en #${channel.title}") },
+            text = {
+                Column(
+                    Modifier
+                        .heightIn(max = 460.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    FormField("Texto o nombre del autor", vm.searchQuery.value, { vm.searchQuery.value = it }, 100)
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { vm.searchMessages(channel.id) },
+                        enabled = vm.searchQuery.value.isNotBlank() && !vm.searching.value,
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text(if (vm.searching.value) "Buscando…" else "Buscar") }
+                    val info = vm.searchInfo.value
+                    if (info != null) {
+                        Text(info, color = DcColors.TextMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                    }
+                    results.forEach { m ->
+                        Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                            Text(m.author.name + " · " + m.timeLabel, color = DcColors.TextMuted, fontSize = 12.sp)
+                            Text(
+                                m.content.ifBlank { "[adjunto o embed]" },
+                                color = DcColors.TextPrimary,
+                                fontSize = 14.sp,
+                                maxLines = 5,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    Text(
+                        "Busca hacia atrás hasta 500 mensajes (Discord no deja a los bots usar su buscador).",
+                        color = DcColors.TextMuted,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = { showSearch = false; vm.clearSearch() }) { Text("Cerrar") } }
         )
     }
 
@@ -702,6 +765,18 @@ private fun AttachmentView(
     onVideoClick: (String, String) -> Unit
 ) {
     when {
+        a.filename == "sticker.json" -> SizedMedia(
+            width = a.width,
+            height = a.height,
+            onClick = {}
+        ) { w, h ->
+            val composition by rememberLottieComposition(LottieCompositionSpec.Url(a.url))
+            LottieAnimation(
+                composition = composition,
+                iterations = LottieConstants.IterateForever,
+                modifier = Modifier.size(w, h)
+            )
+        }
         a.isImage -> SizedMedia(
             width = a.width,
             height = a.height,

@@ -137,7 +137,7 @@ fun MainScreen(state: UiState, vm: AppViewModel) {
                     )
                 }
             }
-            UserBar(state.me, state.gatewayStatus, onLogout = vm::logout)
+            UserBar(state.me, state.gatewayStatus, state.accounts, onLogout = vm::logout, onSwitch = vm::switchAccount, onAdd = vm::addAccount)
         }
     }
 }
@@ -659,8 +659,16 @@ private fun DmPanel(dms: List<DmEntry>, vm: AppViewModel) {
 // ---------- Barra de usuario (el bot) ----------
 
 @Composable
-private fun UserBar(me: DUser?, status: String, onLogout: () -> Unit) {
+private fun UserBar(
+    me: DUser?,
+    status: String,
+    accounts: List<com.example.discordtoolkit.data.Account>,
+    onLogout: () -> Unit,
+    onSwitch: (com.example.discordtoolkit.data.Account) -> Unit,
+    onAdd: () -> Unit
+) {
     var confirm by remember { mutableStateOf(false) }
+    var showAccounts by remember { mutableStateOf(false) }
 
     Row(
         Modifier
@@ -668,6 +676,7 @@ private fun UserBar(me: DUser?, status: String, onLogout: () -> Unit) {
             .padding(8.dp)
             .clip(RoundedCornerShape(24.dp))
             .background(DcColors.Surface)
+            .clickable { showAccounts = true }
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -717,6 +726,33 @@ private fun UserBar(me: DUser?, status: String, onLogout: () -> Unit) {
                 tint = DcColors.TextMuted
             )
         }
+    }
+
+    if (showAccounts) {
+        AlertDialog(
+            onDismissRequest = { showAccounts = false },
+            containerColor = DcColors.Surface,
+            title = { Text("Bots") },
+            text = {
+                Column {
+                    accounts.forEach { acc ->
+                        val active = acc.id == me?.id
+                        TextButton(
+                            onClick = {
+                                showAccounts = false
+                                onSwitch(acc)
+                            },
+                            enabled = !active
+                        ) { Text(if (active) acc.name + "  (activo)" else acc.name) }
+                    }
+                    TextButton(onClick = {
+                        showAccounts = false
+                        onAdd()
+                    }) { Text("+ Agregar otro bot") }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showAccounts = false }) { Text("Cerrar") } }
+        )
     }
 
     if (confirm) {

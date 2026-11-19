@@ -32,7 +32,7 @@ fun AppRoot(state: UiState, vm: AppViewModel) {
             state.phase == Phase.INIT -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
-            state.phase == Phase.LOGIN -> LoginScreen(state.loginError, state.connecting, vm::login)
+            state.phase == Phase.LOGIN -> LoginScreen(state.loginError, state.connecting, vm::login, state.accounts, vm::switchAccount)
             state.openChannel != null -> ChatScreen(state, vm)
             state.rolesGuildId != null -> RolesScreen(state, vm)
             state.embedsGuildId != null -> EmbedScreen(state, vm)

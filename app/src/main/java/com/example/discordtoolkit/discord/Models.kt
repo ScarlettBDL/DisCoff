@@ -315,7 +315,7 @@ object Parse {
         o.optJSONArray("sticker_items").mapObjects {
             val id = it.optString("id")
             when (it.optInt("format_type", 1)) {
-                3 -> null
+                3 -> Attachment("s$id", "sticker.json", "https://cdn.discordapp.com/stickers/$id.json", "application/json", 160, 160)
                 4 -> Attachment("s$id", "sticker.gif", "https://media.discordapp.net/stickers/$id.gif", "image/gif", 160, 160)
                 else -> Attachment("s$id", "sticker.png", "https://media.discordapp.net/stickers/$id.png", "image/png", 160, 160)
             }
@@ -340,7 +340,11 @@ object Parse {
             guildId = o.str("guild_id"),
             author = user(o.getJSONObject("author")),
             rawContent = raw,
-            content = cleanContent(raw, o.optJSONArray("mentions")),
+            content = if (o.optInt("type", 0) == 7 && raw.isBlank()) {
+                "👋 " + user(o.getJSONObject("author")).name + " se unió al servidor"
+            } else {
+                cleanContent(raw, o.optJSONArray("mentions"))
+            },
             epochMs = epochMs,
             timeLabel = timeLabel(epochMs),
             edited = !o.isNull("edited_timestamp"),

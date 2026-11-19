@@ -248,6 +248,24 @@ class DiscordApi(private val token: String) {
         }
     }
 
+    /** Hasta 100 mensajes anteriores a [before], del más nuevo al más viejo (sirve para buscar hacia atrás). */
+    suspend fun getMessagesBefore(channelId: String, before: String?, limit: Int = 100): List<Message> {
+        val b = if (before != null) "&before=$before" else ""
+        val body = execute { request("/channels/$channelId/messages?limit=$limit$b").get().build() }
+        return withContext(Dispatchers.Default) {
+            val arr = JSONArray(body)
+            val list = ArrayList<Message>()
+            for (i in 0 until arr.length()) {
+                try {
+                    list.add(Parse.message(arr.getJSONObject(i)))
+                } catch (e: Exception) {
+                    // mensaje raro: se saltea
+                }
+            }
+            list
+        }
+    }
+
     suspend fun getMessage(channelId: String, messageId: String): Message {
         val body = execute { request("/channels/$channelId/messages/$messageId").get().build() }
         return Parse.message(JSONObject(body))

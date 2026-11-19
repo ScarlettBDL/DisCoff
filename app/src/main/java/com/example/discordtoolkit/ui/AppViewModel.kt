@@ -6,6 +6,7 @@ import android.provider.OpenableColumns
 import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.discordtoolkit.data.Account
 import com.example.discordtoolkit.data.Storage
 import com.example.discordtoolkit.discord.DChannel
 import com.example.discordtoolkit.discord.DGuild
@@ -82,7 +83,9 @@ data class UiState(
     /** Hilos activos de cada server. */
     val threads: Map<String, List<DChannel>> = emptyMap(),
     /** Quién está en cada canal de voz (id del canal -> usuarios). */
-    val voice: Map<String, List<DUser>> = emptyMap()
+    val voice: Map<String, List<DUser>> = emptyMap(),
+    /** Bots guardados en el dispositivo. */
+    val accounts: List<Account> = emptyList()
 ) {
     /** Color del nombre de un usuario: el del rol más alto (por posición) que tenga color. 0 = sin color. */
     fun nameColor(guildId: String?, userId: String): Int {
@@ -139,7 +142,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     init {
         val saved = storage.token()
         if (saved == null) {
-            _state.update { it.copy(phase = Phase.LOGIN) }
+            _state.update { it.copy(phase = Phase.LOGIN, accounts = storage.accounts()) }
         } else {
             connect(saved, manual = false)
         }
@@ -162,7 +165,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val newApi = DiscordApi(token)
                 val me = newApi.getMe()
-                if (manual) storage.saveToken(token)
+                storage.saveToken(token)
+                storage.upsertAccount(Account(me.id, me.name, token))
                 api = newApi
                 gateway?.stop()
                 gateway = Gateway(token, gatewayListener).also { it.start() }
@@ -171,6 +175,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         phase = Phase.READY,
                         connecting = false,
                         me = me,
+                        accounts = storage.accounts(),
                         dms = storage.dms(me.id),
                         guilds = emptyList(),
                         channels = emptyMap(),
@@ -182,9 +187,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (e is DiscordApi.ApiException && e.code == 401) storage.clearToken()
+                if (e is DiscordApi.ApiException && e.code == 401) {
+                    storage.clearToken()
+                    storage.removeAccountByToken(token)
+                }
                 _state.update {
-                    it.copy(phase = Phase.LOGIN, connecting = false, loginError = friendly(e))
+                    it.copy(phase = Phase.LOGIN, connecting = false, loginError = friendly(e), accounts = storage.accounts())
                 }
             }
         }
@@ -206,7 +214,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun logout() {
+    /** Cierra la conexión y borra todo lo que era del bot actual (sin tocar los bots guardados). */
+    private fun resetSession() {
         com.example.discordtoolkit.NotifyService.stop(getApplication<Application>())
         gateway?.stop()
         gateway = null
@@ -220,8 +229,45 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         templates.reset()
         modGuildKey = null
         modReturnTo = null
+    }
+
+    /** Cierra sesión del bot actual y lo saca de la lista; si queda otro guardado, entra con ese. */
+    fun logout() {
+        val current = _state.value.me
+        resetSession()
         storage.clearToken()
-        _state.value = UiState(phase = Phase.LOGIN)
+        if (current != null) storage.removeAccount(current.id)
+        val next = storage.accounts().firstOrNull()
+        if (next != null) {
+            switchTo(next)
+        } else {
+            _state.value = UiState(phase = Phase.LOGIN)
+        }
+    }
+
+    fun switchAccount(account: Account) {
+        if (account.id == _state.value.me?.id) return
+        resetSession()
+        switchTo(account)
+    }
+
+    private fun switchTo(account: Account) {
+        storage.saveToken(account.token)
+        _state.value = UiState(phase = Phase.INIT, accounts = storage.accounts())
+        connect(account.token, manual = false)
+        if (notifEnabled()) {
+            try {
+                com.example.discordtoolkit.NotifyService.start(getApplication<Application>())
+            } catch (e: Exception) {
+                // no es grave
+            }
+        }
+    }
+
+    /** Muestra la pantalla de login para sumar otro bot, sin cerrar la sesión de los guardados. */
+    fun addAccount() {
+        resetSession()
+        _state.value = UiState(phase = Phase.LOGIN, accounts = storage.accounts())
     }
 
     private fun friendly(e: Exception): String = when {
@@ -793,6 +839,58 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 mod.busy = false
             }
         }
+    }
+
+    // ---------- Buscar mensajes ----------
+
+    val searchQuery = androidx.compose.runtime.mutableStateOf("")
+    val searchResults = androidx.compose.runtime.mutableStateOf<List<Message>>(emptyList())
+    val searching = androidx.compose.runtime.mutableStateOf(false)
+    val searchInfo = androidx.compose.runtime.mutableStateOf<String?>(null)
+    private var searchJob: kotlinx.coroutines.Job? = null
+
+    /** Busca hacia atrás en el canal (hasta 500 mensajes) por texto o nombre del autor. */
+    fun searchMessages(channelId: String) {
+        val q = searchQuery.value.trim()
+        val a = api ?: return
+        if (q.isEmpty()) return
+        searchJob?.cancel()
+        searchResults.value = emptyList()
+        searchInfo.value = null
+        searching.value = true
+        searchJob = viewModelScope.launch {
+            try {
+                var before: String? = null
+                var scanned = 0
+                val found = ArrayList<Message>()
+                for (page in 1..5) {
+                    val batch = a.getMessagesBefore(channelId, before)
+                    if (batch.isEmpty()) break
+                    scanned += batch.size
+                    batch.filter {
+                        it.content.contains(q, ignoreCase = true) || it.author.name.contains(q, ignoreCase = true)
+                    }.forEach { found.add(it) }
+                    searchResults.value = found.toList()
+                    before = batch.last().id
+                    if (batch.size < 100) break
+                }
+                searchInfo.value = if (found.isEmpty()) "Sin resultados en los últimos $scanned mensajes" else "${found.size} resultados en los últimos $scanned mensajes"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                searchInfo.value = "✗ " + friendly(e)
+            } finally {
+                searching.value = false
+            }
+        }
+    }
+
+    fun clearSearch() {
+        searchJob?.cancel()
+        searchQuery.value = ""
+        searchResults.value = emptyList()
+        searchInfo.value = null
+        searching.value = false
     }
 
     // ---------- Fijados e hilos ----------
